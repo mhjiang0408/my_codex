@@ -65,7 +65,7 @@ stream_idle_timeout_ms = 30000000    # 5m idle timeout
 
 [model_providers.groupt]
 base_url = "http://127.0.0.1:18081/v1"
-# base_url = "https://ah.api.beer/V1"
+# base_url = "https://ah.api.beer/v1"
 name = "groupt"
 requires_openai_auth = true
 wire_api = "responses"
