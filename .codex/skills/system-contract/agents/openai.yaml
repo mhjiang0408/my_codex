@@ -1,0 +1,7 @@
+interface:
+  display_name: "System Contract"
+  short_description: "Check AgentSwarm repository rules"
+  default_prompt: "Use $system-contract to run the AgentSwarm repository contract gate before closing workflow or skill changes."
+policy:
+  allow_implicit_invocation: true
+

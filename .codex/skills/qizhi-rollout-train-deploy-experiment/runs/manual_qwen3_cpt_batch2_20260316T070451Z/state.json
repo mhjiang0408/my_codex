@@ -1,0 +1,9 @@
+{
+  "run_id": "manual_qwen3_cpt_batch2_20260316T070451Z",
+  "created_at": "2026-03-16T07:04:51.496517+00:00",
+  "updated_at": "2026-03-16T07:04:51.496555+00:00",
+  "status": "running",
+  "current_phase": "init",
+  "phase_status": {},
+  "last_error": null
+}

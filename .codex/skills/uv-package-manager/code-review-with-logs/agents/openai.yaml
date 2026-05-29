@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Review With Logs"
+  short_description: "Run the hook-owned task closeout review/report workflow"
+  default_prompt: "Use $code-review-with-logs to run task-scoped unit-test commands and produce Markdown/JSON closeout reports from logs, diffs, and session records. Use the canonical end-task hook workflow; do not use the retired review_spec/run_review_flow flow."

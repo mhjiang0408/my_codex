@@ -1,0 +1,41 @@
+# Example qzx job template — templates/qzx/train-8gpu.yaml
+#
+# Templates live in templates/qzx/ or templates/ in the repo root.
+# Load with: qzx launch my-run --template train-8gpu --set platform.nodes=2
+#
+# Inheritance: set `inherits: base.yaml` to compose from a parent template.
+# Interpolation: {name}, {run_id}, {workspace}, {workspace_root} are replaced.
+
+platform:
+  pool_type: h200
+  nodes: 1
+  # pool: my-pool-alias      # explicit pool, or omit for auto-select
+  # image: my-custom-image    # explicit image, or omit for pool default
+  # priority: 1               # 0=low, 1=normal, 2=high
+  # timeout: 86400            # job timeout in seconds
+  # shm_size: 64              # shared memory in GB (omit → 80% of mem)
+  # launcher: direct          # "direct" or "ray_job"
+  # ray_num_gpus_per_node: 8  # GPUs per Ray node (default: 8)
+
+env:
+  WANDB_PROJECT: my-project
+  WANDB_RUN_NAME: "{name}"
+  OUTPUT_DIR: "{workspace_root}/runs/checkpoints/{name}"
+
+# Command as list (argv) or string (shell).
+command:
+  - python
+  - train.py
+  - --config
+  - configs/default.yaml
+  - --output-dir
+  - "{workspace_root}/runs/checkpoints/{name}"
+
+# --- Inheritance example ---
+# File: templates/qzx/train-16gpu.yaml
+#
+# inherits: train-8gpu.yaml
+# platform:
+#   nodes: 2
+# env:
+#   WANDB_RUN_NAME: "{name}-16gpu"

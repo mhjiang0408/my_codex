@@ -1,0 +1,4 @@
+interface:
+  display_name: "modular-code"
+  short_description: "Write modular Python code that is easy to understand, test, and safely modify with AI agents."
+  default_prompt: ""

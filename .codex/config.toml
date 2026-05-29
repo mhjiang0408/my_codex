@@ -1,0 +1,224 @@
+# model_provider = "fox"
+# model_provider = "crs"
+# model_provider = "meta"
+# model_provider = "packycode"
+model_provider = "groupt"
+# model_provider = "xly"
+# model_provider = "88code"
+# model_provider = "right"
+model = "gpt-5.5"
+model_reasoning_effort = "high"
+model_reasoning_summary = "detailed"
+plan_mode_reasoning_effort = "xhigh"
+model_verbosity = "high"
+disable_response_storage = true
+# same as `--sandbox workspace-write`
+sandbox_mode = "workspace-write"
+personality = "pragmatic"
+web_search = "live"
+service_tier = "fast"
+
+[mcp_servers.feishu]
+command = "npx"
+args = [
+    "-y", 
+    "@larksuiteoapi/lark-mcp", 
+    "mcp", 
+    "-a",
+    "cli_a90e3aacb1f9dbc2",
+    "-s",
+    "SMNzRdUcGuHxSgS5WFUyfcl5ucTaWIG1",
+    "--oauth" 
+]
+startup_timeout_ms = 60000
+
+
+[features]
+skills = true
+shell_snapshot = true
+multi_agent = true
+goals = true
+terminal_resize_reflow = true
+
+[sandbox_workspace_write]
+# By default, the cwd for the Codex session will be writable as well as $TMPDIR
+# (if set) and /tmp (if it exists). Setting the respective options to `true`
+# will override those defaults.
+exclude_tmpdir_env_var = false
+exclude_slash_tmp = false
+
+# Optional list of _additional_ writable roots beyond $TMPDIR and /tmp.
+writable_roots = ["/inspire/hdd/project/qproject-fundationmodel/public/mhjiang/homework/MNIST"]
+
+# Allow the command being run inside the sandbox to make outbound network
+# requests. Disabled by default.
+network_access = true
+
+[model_providers.group]
+base_url = "http://127.0.0.1:12580/openai"
+name = "group"
+requires_openai_auth = true
+wire_api = "responses"
+request_max_retries = 100            # retry failed HTTP requests
+stream_max_retries = 100            # retry dropped SSE streams
+stream_idle_timeout_ms = 30000000    # 5m idle timeout
+
+[model_providers.groupt]
+base_url = "http://127.0.0.1:18081/v1"
+# base_url = "http://127.0.0.1:12580/v1"
+name = "groupt"
+requires_openai_auth = true
+wire_api = "responses"
+request_max_retries = 100            # retry failed HTTP requests
+stream_max_retries = 100            # retry dropped SSE streams
+stream_idle_timeout_ms = 30000000    # 5m idle timeout
+
+[model_providers.xly]
+# base_url = "https://apicz.boyuerichdata.com/v1/"
+base_url = "http://127.0.0.1:18082/v1"
+name = "xly"
+requires_openai_auth = true
+wire_api = "responses"
+request_max_retries = 1            # retry failed HTTP requests
+stream_max_retries = 1            # retry dropped SSE streams
+stream_idle_timeout_ms = 30000000    # 5m idle timeout
+
+[model_providers.packycode]
+name = "packycode"
+base_url = "http://127.0.0.1:18080/v1"
+wire_api = "responses"
+requires_openai_auth = true
+request_max_retries = 100            # retry failed HTTP requests
+stream_max_retries = 100           # retry dropped SSE streams
+stream_idle_timeout_ms = 30000000    # 500m idle timeout
+
+[model_providers.crs]
+name = "crs"
+# base_url = "https://aoostar.api.beer/openai"
+base_url = "https://api.ikuncode.cc/v1"
+wire_api = "responses"
+requires_openai_auth = true
+request_max_retries = 1            # retry failed HTTP requests
+stream_max_retries = 1            # retry dropped SSE streams
+stream_idle_timeout_ms = 60000    # 5m idle timeout
+
+[model_providers.right]
+name = "right"
+base_url = "https://right.codes/codex/v1"
+wire_api = "responses"
+requires_openai_auth = true
+request_max_retries = 100            # retry failed HTTP requests
+stream_max_retries = 100            # retry dropped SSE streams
+stream_idle_timeout_ms = 60000    # 5m idle timeout
+
+[model_providers.fox]
+name = "fox"
+base_url = "https://code.newcli.com/codex/v1"
+wire_api = "responses"
+requires_openai_auth = true
+request_max_retries = 100            # retry failed HTTP requests
+stream_max_retries = 100            # retry dropped SSE streams
+stream_idle_timeout_ms = 60000    # 5m idle timeout
+
+[model_providers.88code]
+base_url = "https://www.88code.ai/openai/v1"
+name = "88code"
+requires_openai_auth = true
+wire_api = "responses"
+request_max_retries = 100            # retry failed HTTP requests
+stream_max_retries = 100            # retry dropped SSE streams
+stream_idle_timeout_ms = 60000    # 5m idle timeout
+
+[model_providers.meta]
+name = "meta"
+base_url = "https://coultra.blueshirtmap.com/v1"
+wire_api = "responses"
+requires_openai_auth = true
+request_max_retries = 100            # retry failed HTTP requests
+stream_max_retries = 100            # retry dropped SSE streams
+stream_idle_timeout_ms = 60000    # 5m idle timeout
+
+[projects."/inspire/hdd/project/qproject-fundationmodel/public/mhjiang/DataFlyWheel/AgencyDataFlywheel"]
+trust_level = "trusted"
+
+[projects."/inspire/hdd/project/qproject-fundationmodel/public/mhjiang/homework/MNIST"]
+trust_level = "trusted"
+
+[projects."/inspire/hdd/project/qproject-fundationmodel/public/mhjiang/Inspire-cli"]
+trust_level = "trusted"
+
+[projects."/inspire/hdd/project/qproject-fundationmodel/public/mhjiang/SteptronOss"]
+trust_level = "trusted"
+
+[projects."/inspire/qb-ilm/project/qproject-fundationmodel/public/zengji/PRSynthesis"]
+trust_level = "trusted"
+
+[projects."/tmp/tmp.h6vuojix16"]
+trust_level = "trusted"
+
+[projects."/tmp/tmp.QgDh0QkmyU"]
+trust_level = "trusted"
+
+[projects."/tmp/tmp.b2YwQc3ava"]
+trust_level = "trusted"
+
+[projects."/inspire/hdd/project/qproject-fundationmodel/public/mhjiang/ClawTeam"]
+trust_level = "trusted"
+
+[projects."/inspire/hdd/project/qproject-fundationmodel/public/mhjiang/DataFlyWheel/claude-code-rev"]
+trust_level = "trusted"
+
+[projects."/inspire/hdd/project/qproject-fundationmodel/public/mhjiang/AgentSwarm"]
+trust_level = "trusted"
+
+[projects."/tmp/contextswarm_live_smoke_host_judge/sessions/worker-0"]
+trust_level = "trusted"
+
+[projects."/tmp/contextswarm_live_smoke_host_judge_10s/sessions/worker-0"]
+trust_level = "trusted"
+
+[projects."/tmp/contextswarm_live_smoke_host_judge_10s_prompt/sessions/worker-0"]
+trust_level = "trusted"
+
+[projects."/tmp/contextswarm_live_smoke_host_judge_5min_prompt/sessions/worker-0"]
+trust_level = "trusted"
+
+[projects."/tmp/contextswarm_codex_probe_minimal"]
+trust_level = "trusted"
+
+[projects."/tmp/contextswarm_codex_probe_bypass"]
+trust_level = "trusted"
+
+[projects."/tmp/contextswarm_codex_probe_danger"]
+trust_level = "trusted"
+
+[projects."/tmp/contextswarm_codex_probe_ignore_user_config"]
+trust_level = "trusted"
+
+[projects."/tmp/contextswarm_live_smoke_host_judge_sandbox_5min/sessions/worker-0"]
+trust_level = "trusted"
+
+[projects."/tmp/contextswarm_codex_probe_low"]
+trust_level = "trusted"
+
+[projects."/tmp/contextswarm_live_smoke_host_judge_low_5min/sessions/worker-0"]
+trust_level = "trusted"
+
+[projects."/tmp/contextswarm_codex_api_probe"]
+trust_level = "trusted"
+
+[projects."/tmp/contextswarm_codex_capture_probe"]
+trust_level = "trusted"
+
+[notice]
+hide_gpt5_1_migration_prompt = true
+hide_rate_limit_model_nudge = true
+"hide_gpt-5.1-codex-max_migration_prompt" = true
+fast_default_opt_out = true
+
+[notice.model_migrations]
+"gpt-5.2" = "gpt-5.4"
+"gpt-5.1-codex-max" = "gpt-5.2-codex"
+
+[tui.model_availability_nux]
+"gpt-5.5" = 4

@@ -1,0 +1,134 @@
+# Offline GPU Pools
+
+Many GPU pools on the QZ platform have **no internet access** (offline / air-gapped). CPU pools (`cpu` type) typically do have internet. Both share the same GPFS filesystem.
+
+The general pattern: **download everything on a CPU notebook, store on GPFS, consume from GPU jobs.**
+
+## Identifying offline pools
+
+Check pool type in your config. Pools with type `cpu` have internet; GPU pools (`h200`, `h100`) and `hpc` type pools generally do not.
+
+When a GPU job fails with network errors (connection timeouts to external hosts), the pool is offline.
+
+## Point root home to GPFS
+
+Container home (`/root`) is ephemeral — it's lost when the job/notebook stops. Change it to a GPFS directory so that shell config (`.bashrc`, `.profile`), SSH keys, tool configs, and caches persist across jobs:
+
+```bash
+# In your image or notebook setup — edit /etc/passwd to change root's home:
+sed -i 's|root:/root|root:/gpfs/path/to/your/home|' /etc/passwd
+cd ~  # now lands on GPFS
+```
+
+This means `.bashrc` on GPFS is sourced by every job automatically — a natural place to put the env vars below. Changes to the GPFS home take effect on the next job without rebuilding the image.
+
+## Environment variables for offline GPFS setup
+
+Point all caches to a shared GPFS directory and enable offline modes. These should be set in the job/notebook entrypoint or baked into the container image (e.g. in `/etc/profile.d/` or the user's `.bashrc` on GPFS):
+
+```bash
+# Base path — adjust to your GPFS project directory
+SHARED=/gpfs/path/to/shared
+
+# HuggingFace
+export HF_HOME=$SHARED/cache/hf
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+
+# Weights & Biases
+export WANDB_MODE=offline
+export WANDB_DIR=$SHARED/cache
+export WANDB_ARTIFACT_DIR=$SHARED/cache/wandb_artifacts
+export WANDB_DATA_DIR=$SHARED/cache/wandb_data
+
+# uv (Python package manager)
+export UV_CACHE_DIR=$SHARED/cache/uv
+export UV_PYTHON_INSTALL_DIR=$SHARED/cache/uv_python
+export UV_PYTHON_PREFERENCE=only-managed
+export UV_VENV_SEED=1
+export UV_TORCH_BACKEND=cu128
+```
+
+On a CPU notebook (online), set the same paths **without** the offline flags, then download models/packages. GPU jobs consume from the same GPFS cache with offline flags enabled.
+
+## pip / Python packages
+
+### Internal PyPI mirror
+
+The QZ platform provides an internal Nexus mirror accessible from offline pools:
+
+```bash
+pip install torch --index-url http://nexus.sii.shaipower.online/repository/pypi-group/simple --trusted-host nexus.sii.shaipower.online
+```
+
+### Shared venv on GPFS
+
+The most practical approach — create and maintain a virtualenv on the shared GPFS from a CPU notebook. GPU jobs activate the same venv:
+
+```bash
+# On CPU notebook:
+uv venv $SHARED/venvs/train --python 3.11
+source $SHARED/venvs/train/bin/activate
+uv pip install torch transformers vllm
+
+# In GPU job:
+source $SHARED/venvs/train/bin/activate
+python train.py
+```
+
+## HuggingFace models and datasets
+
+With `HF_HOME` on GPFS and `HF_HUB_OFFLINE=1` (see env vars above), download once on a CPU notebook:
+
+```bash
+# On CPU notebook (unset offline flag temporarily):
+unset HF_HUB_OFFLINE
+huggingface-cli download meta-llama/Llama-3-8B
+```
+
+GPU jobs with `HF_HUB_OFFLINE=1` will load from cache without network access.
+
+## Weights & Biases (wandb)
+
+With `WANDB_MODE=offline` (see env vars above), wandb logs locally. Sync later from a CPU notebook or local machine:
+
+```bash
+wandb sync $SHARED/cache/wandb/latest-run
+```
+
+## apt / system packages
+
+### Internal apt mirror
+
+```bash
+sed -i 's|http://[^ ]*.ubuntu.com/ubuntu/|http://nexus.sii.shaipower.online/repository/ubuntu/|g' /etc/apt/sources.list
+apt-get update && apt-get install -y <packages>
+```
+
+Best practice: install system packages in a CPU notebook and save the image rather than installing at job runtime.
+
+## General GPFS caching pattern
+
+For any large download (model weights, datasets, compiled binaries):
+
+1. **Spin up a CPU notebook** (has internet):
+   ```bash
+   qz notebook create --name downloader --image base:v1 --type cpu
+   qz notebook wait downloader
+   ```
+
+2. **Download to shared GPFS** via notebook exec:
+   ```bash
+   qz notebook exec downloader "huggingface-cli download org/model"
+   qz notebook exec downloader "wget -P $SHARED/data/ https://example.com/dataset.tar.gz"
+   ```
+
+3. **Reference from GPU jobs** — the env vars above ensure all tools look at GPFS first.
+
+4. **Stop the CPU notebook** when done downloading:
+   ```bash
+   qz notebook stop downloader
+   ```
+
+The CPU notebook can be kept around as a persistent download gateway, or stopped and restarted as needed.

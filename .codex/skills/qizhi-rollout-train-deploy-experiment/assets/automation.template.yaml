@@ -1,0 +1,319 @@
+# Automation config for qizhi-rollout-train-deploy-experiment
+
+legacy:
+  # AutoQZ mapping config (list-format YAML)
+  mapping_config_path: "/inspire/hdd/project/qproject-fundationmodel/public/mhjiang/AutoQZ/config/config.yaml"
+  passthrough_if_id_like: true
+
+  # Optional table overrides / extensions
+  mapping_overrides:
+    image_space:
+      "公开可见镜像": "SOURCE_PUBLIC"
+      "官方镜像": "SOURCE_OFFICIAL"
+      "私有镜像": "SOURCE_PRIVATE"
+
+  # Rules: map a value from source_key, using map_key table, then store to target_key.
+  mapping_rules:
+    - source_key: space_id
+      map_key: space_id
+      target_key: workspace_id
+      required: true
+    - source_key: logic_compute_group
+      map_key: logic_compute_group
+      target_key: logic_compute_group_id
+      required: true
+    - source_key: project_id
+      map_key: project_id
+      target_key: project_id
+      required: true
+    - source_key: spec_id
+      map_key: spec_id
+      target_key: spec_id
+      required: true
+    - source_key: model
+      map_key: model_id
+      target_key: model_id
+      required: true
+    - source_key: task_name
+      map_key: task_name
+      target_key: task_name_api
+      required: false
+    - source_key: image_space
+      map_key: image_space
+      target_key: image_type
+      required: false
+
+runtime_defaults:
+  # 机房号 -> logic_compute_group 映射。执行时你只需提供 room_id。
+  room_to_logic_compute_group:
+    "1": "one_gpu"
+    "2": "two_gpu"
+    "3": "three_gpu"
+
+qz:
+  enabled: true
+  # Freeze rule: do not add qz usage-style probing here.
+  # Capacity scan, submit precheck, and monitor snapshots all use `qz avail`.
+  # qz executable from /inspire/hdd/project/qproject-fundationmodel/public/mhjiang/myqz
+  bin: "qz"
+  # Optional working dir for qz subprocess calls. Leave empty to use repo root.
+  working_dir: "/inspire/hdd/project/qproject-fundationmodel/public/mhjiang/myqz"
+  # env.sh should expose the QZ_API_* / QZ_COOKIE_* env vars used by `qz login`.
+  env_script_path: "/inspire/hdd/project/qproject-fundationmodel/public/mhjiang/DataFlyWheel/AgencyDataFlywheel/.codex/skills/qizhi-rollout-train-deploy-experiment/env.sh"
+  # Optional overrides matching QZ_CONFIG_DIR / QZ_CACHE_DIR.
+  config_dir: ""
+  cache_dir: ""
+  # Candidate workspace order. Repo default: probe `专项` first, then continue to `分布式`
+  # when the earlier workspace cannot prove enough H200 nodes.
+  workspace_preferences:
+    - "专项"
+    - "分布式"
+  # Legacy single-workspace default; keep aligned with the first entry in workspace_preferences.
+  workspace_keyword: "专项"
+  # Optional: restrict candidate pools before type filtering.
+  # Example:
+  # pool_allowlist:
+  #   - "<pool_alias_from_qz_pools>"
+  pool_allowlist: []
+  # pool 先确定 workspace / lcg；type 只用于筛选与优先级顺序，不能反过来扩大 workspace 范围。
+  # Repo default: 先找 H200，可跨 workspace/机房搜索，但不要自动回退到 H100。
+  type_preference:
+    - "h200"
+  # Whether to call `qz login` before orchestration starts.
+  refresh_login_before_run: true
+  # 训练/部署轮询中，每 N 次轮询采集一次 qz avail 快照；不采集 usage 快照。
+  monitor_interval_polls: 5
+
+compose:
+  # Used only when orchestrate is called with --registry-path and without --rollouts-path.
+  enabled: true
+  update_registry: true
+  output_dir_pattern: ".codex/skills/qizhi-rollout-train-deploy-experiment/runs/{run_id}/composed_rollouts"
+  working_dir: "/inspire/hdd/project/qproject-fundationmodel/public/mhjiang/DataFlyWheel/AgencyDataFlywheel"
+
+data_pipeline:
+  # Equivalent parameter semantics to scripts/run_train_data_process.sh.
+  # orchestrate.py injects --rollouts-path from:
+  #   1) explicit CLI --rollouts-path, or
+  #   2) compose output generated from --registry-path.
+  # dataset_path is treated as dataset root.
+  # orchestrate writes parquet into: <dataset_path>/<dataset_date>
+  dataset_path: "data/train/dataset"
+  tokenizer_path: "/inspire/hdd/project/qproject-fundationmodel/public/cache/GLM-4.6"
+  max_tokens: 200000
+  # parquet最少样本数。orchestrate会按 rollout 数自动放大 duplicate_times，确保不少于该阈值
+  min_parquet_samples: 64
+  duplicate_times: 2
+  raw_dir_name: "raw_data"
+  openai_dir_name: "openai_data"
+  rollouts_dir_name: "rollouts"
+  include_tools: true
+  mv_duplicates: false
+  working_dir: "/inspire/hdd/project/qproject-fundationmodel/public/mhjiang/DataFlyWheel/AgencyDataFlywheel"
+
+train:
+  defaults:
+    # 默认 8 节点（通常对应 64 卡）; 可在 legacy run.yaml 增加 train_instance_count 覆盖
+    instance_count: 8
+    # 默认共享内存 800 Gi; 可在 legacy run.yaml 增加 train_shm_gi 覆盖
+    shm_gi: 800
+    # 默认训练镜像（官方镜像）；可在 legacy run.yaml 增加 train_image_name 覆盖
+    image_name: "docker.sii.shaipower.online/inspire-studio/slime:20250812-v2"
+    # 默认训练镜像类型（官方镜像）；可在 legacy run.yaml 增加 train_image_type 覆盖
+    image_type: "SOURCE_OFFICIAL"
+    # 默认训练输出根目录；最终目录会按 model + dataset_date(mmdd) 生成，如 glm-4.6-pr-0305
+    output_root: "/inspire/qb-ilm/project/qproject-fundationmodel/public/mhjiang/models"
+  # Compatibility metadata retained for audit/mapping. Actual transport uses:
+  # - submit: `qz job create`
+  # - detail: `qz job status --raw`
+  create_path: "/api/v1/train_job/create"
+  detail_path: "/api/v1/train_job/detail"
+  detail_id_field: "job_id"
+  id_field_candidates:
+    - data.job_id
+    - job_id
+    - data.id
+    - id
+  create_payload:
+    name: "train-{service_name}-{run_id}"
+    logic_compute_group_id: "{logic_compute_group_id}"
+    project_id: "{project_id}"
+    auto_fault_tolerance: false
+    framework: "pytorch"
+    command: "bash /inspire/hdd/project/qproject-fundationmodel/public/mhjiang/DataFlyWheel/AgencyDataFlywheel/scripts/train/glm4.6.sh {parquet_path} {train_output_dir}"
+    task_priority: "{priority}"
+    workspace_id: "{workspace_id}"
+    framework_config:
+      - image: "{train_image_name}"
+        image_type: "{train_image_type}"
+        instance_count: "{train_instance_count}"
+        shm_gi: "{train_shm_gi}"
+        spec_id: "{spec_id}"
+  polling:
+    # Submit 前预检与 monitor 快照统一使用选定 pool/type 对应的 `qz avail`；
+    # 这里仅控制 `qz job status --raw` 的轮询节奏与状态兼容规则。
+    poll_interval_seconds: 30
+    timeout_seconds: 172800
+    # 训练框架兼容：若状态为 failed/job_failed 且运行时长 >= 20 分钟，视为训练完成并继续部署
+    accept_failed_if_runtime_minutes: 20
+    status_field_candidates:
+      - data.status
+      - data.state
+      - data.phase
+      - status
+      - state
+      - phase
+    running_statuses:
+      - pending
+      - queued
+      - running
+      - created
+      - initializing
+      - starting
+    success_statuses:
+      - success
+      - succeeded
+      - completed
+      - finished
+    failed_statuses:
+      - failed
+      - job_failed
+      - error
+      - cancelled
+      - canceled
+      - stopped
+      - timeout
+
+deploy:
+  defaults:
+    image_name: "{image_name}"
+    image_cli_ref: "{image_cli_ref}"
+    image_type: "{image_type}"
+    model_id: "{model_id}"
+    model_version: "{model_version}"
+    spec_id: "{deploy_spec_id}"
+  hf_wait:
+    # Deploy前等待HF转换产物就绪（默认开启）
+    enabled: true
+    # 可选：用于文档化/显式声明HF根目录；实际等待目录优先从bash_command中的_hf路径推导
+    ckpt_root: "/inspire/qb-ilm/project/qproject-fundationmodel/public/mhjiang/AgencyDataFlywheel/ckpts"
+    # 目录匹配规则（必须可提取迭代号）
+    dir_name_regex: "^iter_(\\d+)_hf$"
+    # 目录就绪判定文件
+    ready_file_names:
+      - "config.json"
+      - "generation_config.json"
+    # 选择策略：选择最新可用HF目录
+    selection_policy: "latest_ready"
+    # 轮询间隔（秒）
+    poll_interval_seconds: 60
+    # 超时（秒）；0表示无限等待
+    timeout_seconds: 0
+    # 选中更高迭代HF后，是否自动重写bash_command中的_hf路径
+    rewrite_bash_command_with_selected_hf: true
+
+  # Compatibility metadata retained for audit/mapping. Actual transport uses:
+  # - submit: `qz deploy create`
+  # - detail: `qz deploy status --raw`
+  create_path: "/api/v1/inference_servings/create"
+  detail_path: "/api/v1/inference_servings/detail"
+  detail_id_field: "inference_serving_id"
+  id_field_candidates:
+    - data.inference_serving_id
+    - data.deployment_id
+    - inference_serving_id
+    - deployment_id
+    - data.id
+    - id
+  create_payload:
+    name: "{service_name}"
+    logic_compute_group_id: "{logic_compute_group_id}"
+    project_id: "{project_id}"
+    image: "{image_cli_ref}"
+    image_address: "{image_name}"
+    image_type: "{image_type}"
+    command: "{bash_command}"
+    model_id: "{model_id}"
+    model_version: "{model_version}"
+    port: "{service_port}"
+    replicas: "{num_replicas}"
+    node_num_per_replica: "{num_nodes}"
+    custom_domain: "{api_domain_prefix}"
+    task_priority: "{priority}"
+    workspace_id: "{workspace_id}"
+    spec_id: "{spec_id}"
+  polling:
+    # Submit 前预检与 monitor 快照统一使用选定 pool/type 对应的 `qz avail`；
+    # 这里仅控制 `qz deploy status --raw` 的轮询节奏。
+    poll_interval_seconds: 20
+    timeout_seconds: 7200
+    status_field_candidates:
+      - data.status
+      - data.state
+      - data.phase
+      - status
+      - state
+      - phase
+    endpoint_field_candidates:
+      - data.endpoint
+      - data.url
+      - data.domain
+      - data.service_url
+      - endpoint
+      - url
+      - domain
+    running_statuses:
+      - pending
+      - queued
+      - running
+      - created
+      - initializing
+      - starting
+    success_statuses:
+      - success
+      - succeeded
+      - completed
+      - finished
+      - running
+    failed_statuses:
+      - failed
+      - job_failed
+      - error
+      - cancelled
+      - canceled
+      - stopped
+      - timeout
+
+callback:
+  # Executed after deploy monitor reaches success state.
+  # Available variables: {run_id}, {rollouts_path}, {parquet_path}, {inference_serving_id}, {serving_endpoint}, {experiment_api_base}, etc.
+  # Available env vars also include: AUTOMATION_CONFIG_PATH, SERVING_ID, SERVING_ENDPOINT, DEPLOY_API_BASE, EXPERIMENT_API_BASE.
+  command: "echo deploy_done run_id={run_id} serving_id={inference_serving_id} endpoint={serving_endpoint} experiment_api_base={experiment_api_base}"
+  shell: true
+  working_dir: "/inspire/hdd/project/qproject-fundationmodel/public/mhjiang/DataFlyWheel/AgencyDataFlywheel"
+
+deployment_benchmark:
+  deployment:
+    base_url: ""
+    api_key: ""
+    model: ""
+    pipeline_config_path: "config/pipeline.yaml"
+    pipeline_section: "query_constructor"
+  benchmarks:
+    - type: "apt_bench"
+      mode: "smoke_then_launch_full"
+      aptbench_root: "/inspire/hdd/project/qproject-fundationmodel/public/mhjiang/DataFlyWheel/APTBench"
+      backend: "openai_api"
+      output_root: "logs/deployment_benchmarks"
+      tokenizer_path: ""
+      max_samples_per_task: 1
+
+notify:
+  feishu:
+    enabled: true
+    chat_id: "oc_28abbb3d6e900a7084967e947da391fe"
+    # Option A: App credentials (recommended)
+    app_id: ""
+    app_secret: ""
+    # Option B: Incoming webhook URL (if provided, app mode is skipped)
+    webhook_url: ""

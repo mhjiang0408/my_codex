@@ -1,0 +1,6 @@
+interface:
+  display_name: "Refinement"
+  short_description: "Turn workflow failures into tested rule fixes"
+  default_prompt: "Use $refinement to record this AGENTS or skill failure mode and verify the refined rule fixes it."
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "qzx"
+version = "0.1.0"
+description = "Project-specific QZ CLI extensions"
+requires-python = ">=3.10"
+dependencies = ["qz-cli"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/qzx"]
+
+[project.scripts]
+qzx = "qzx.cli:main"

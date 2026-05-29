@@ -1,0 +1,6 @@
+interface:
+  display_name: "Experiment Handbook"
+  short_description: "Record repeatable experiment run methods"
+  default_prompt: "Use $experiment-handbook to document or update the repeatable run method for this experiment."
+policy:
+  allow_implicit_invocation: true

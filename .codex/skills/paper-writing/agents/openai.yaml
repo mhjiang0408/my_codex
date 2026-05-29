@@ -1,0 +1,4 @@
+interface:
+  display_name: "paper writing"
+  short_description: "Run the session-scoped fail-fast review pipeline"
+  default_prompt: ""

@@ -1,0 +1,43 @@
+# QZ Account Context
+
+Account-specific IDs and resources. Copy this file to `account.md` (gitignored) and fill in your own values.
+
+Discover your IDs by running `/qz-browser explore` or calling the relevant APIs.
+
+## User
+- Name: <your-name> (<username>-<institution_id>)
+- User ID: `user-<your-user-id>`
+- Institution ID: `<your-institution-id>`
+
+## Workspaces
+
+| Name | ID | Internet | Notes |
+|------|-----|----------|-------|
+| 分布式训练空间 | `ws-...` | no | H100/H200, primary for training |
+| 可上网GPU资源 | `ws-...` | **yes** | 4090, internet-accessible GPU |
+| CPU资源空间 | `ws-...` | **yes** | CPU only, online notebooks/SSH |
+
+## All Known Pools
+
+List the pools visible to your account. Use `qz pools` or the pool list API
+to discover LCG IDs and node counts.
+
+### Example workspace — shared GPU
+
+| Pool name | LCG ID | GPU | VRAM | Nodes | Use |
+|-----------|--------|-----|------|-------|-----|
+| H200-3号机房 | `lcg-...` | H200 | 141GB | — | training / notebook |
+
+## Projects
+
+| Name | ID | Priority |
+|------|-----|----------|
+| my-project | `project-...` | 10 (HIGH) |
+
+## Notebook Quota IDs
+
+Quota IDs vary per workspace. Discover them via `GET /api/v1/notebook/schedule/{ws_id}`.
+
+## Image Registry
+- Internal (pull for training/notebooks): `docker.sii.shaipower.online/inspire-studio/`
+- Push registry (for image upload): `docker-qb.sii.edu.cn/inspire-studio/`

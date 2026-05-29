@@ -1,0 +1,4 @@
+interface:
+  display_name: "Unit Test"
+  short_description: "Build strict task-level acceptance tests and gates"
+  default_prompt: "Use $unit-test to turn this task into strict fail-before and pass-after acceptance tests, then emit the task-scoped pytest, ruff, mypy, and review-spec commands."
