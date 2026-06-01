@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -27,6 +28,7 @@ REQUIRED_FIELDS = {
 }
 
 DEFAULT_CHAT_ID = "oc_28abbb3d6e900a7084967e947da391fe"
+CODEX_WINDOW_LABEL_RE = re.compile(r"^[^:\s]+:\d+\.\d+$")
 
 
 def validate_report_payload(payload: dict[str, Any]) -> tuple[bool, str | None]:
@@ -66,15 +68,18 @@ def build_feishu_message_text(
     summary_text: str | None = None,
     doc_url: str | None = None,
     attachment_name: str | None = None,
+    codex_window: str | None = None,
 ) -> str:
     status = str(payload.get("status") or "UNKNOWN").upper()
     review_id = str(payload.get("review_id") or "unknown-review")
+    window_label = _normalize_codex_window_label(codex_window)
     objective = _clip_inline(_field_text(payload, "Objective", fallback="未提供目标"), limit=140)
     tests_status = _tests_status(payload)
     reliable_status = _reliable_status(payload)
     lines = [
         f"审查结果：{_status_text_zh(status)}",
         f"审查编号：{review_id}",
+        f"窗口号：{window_label}",
         f"目标：{objective}",
         f"完成情况：{_task_completion_status_text(status)}",
         "任务摘要：",
@@ -99,6 +104,7 @@ def build_delivery_payload(
     *,
     doc_url: str | None = None,
     attachment_path: Path | None = None,
+    codex_window: str | None = None,
 ) -> dict[str, Any]:
     attachment_name = attachment_path.name if attachment_path else None
     return {
@@ -111,11 +117,226 @@ def build_delivery_payload(
             summary_text=summary_text,
             doc_url=doc_url,
             attachment_name=attachment_name,
+            codex_window=codex_window,
         ),
         "doc_url": doc_url,
         "attachment_path": attachment_path.as_posix() if attachment_path else None,
         "attachment_name": attachment_name,
     }
+
+
+def resolve_codex_window_label(
+    explicit: str | None = None,
+    *,
+    review_session_id: str | None = None,
+    current_session_id: str | None = None,
+    window_session_id: str | None = None,
+    payload: dict[str, Any] | None = None,
+) -> str:
+    report_context = _matching_report_codex_context(payload, review_session_id)
+    if report_context:
+        label = _normalize_codex_window_label(str(report_context.get("window_label") or ""))
+        if label != "未提供":
+            return label
+    current_context = detect_current_codex_context()
+    effective_current_session = current_session_id or str(current_context.get("session_id") or "")
+    effective_window_session = window_session_id or effective_current_session
+    if not _codex_window_session_matches(
+        review_session_id=review_session_id,
+        current_session_id=effective_current_session,
+        window_session_id=effective_window_session,
+    ):
+        return "未提供"
+    for value in (
+        explicit,
+        os.environ.get("CODEX_WINDOW"),
+        os.environ.get("CODEX_WINDOW_ID"),
+        os.environ.get("CODEX_WINDOW_LABEL"),
+        current_context.get("window_label"),
+    ):
+        label = _normalize_codex_window_label(value)
+        if label != "未提供":
+            return label
+    return "未提供"
+
+
+def detect_current_codex_context() -> dict[str, Any]:
+    """Best-effort delivery context for the active Codex process."""
+    pane_tty, process_source = _detect_current_codex_tty()
+    tmux_pane = _detect_tmux_pane_for_tty(pane_tty) if pane_tty else {}
+    env_window = _detect_env_window_label()
+    tmux_window = str(tmux_pane.get("window_label") or "") or None
+    window_label = tmux_window or env_window[0]
+    window_source = str(tmux_pane.get("source") or "") if tmux_window else env_window[1]
+    return {
+        "session_id": _detect_current_codex_session_id(),
+        "session_source": "CODEX_THREAD_ID" if os.environ.get("CODEX_THREAD_ID") else "unavailable",
+        "window_label": window_label,
+        "window_label_kind": "tmux_pane_address" if window_label else None,
+        "window_source": window_source,
+        "pane_tty": pane_tty,
+        "pane_id": tmux_pane.get("pane_id"),
+        "window_name": tmux_pane.get("window_name"),
+        "process_source": process_source,
+    }
+
+
+def _matching_report_codex_context(
+    payload: dict[str, Any] | None, review_session_id: str | None
+) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    context = payload.get("codex_context")
+    if not isinstance(context, dict):
+        return None
+    review_id = str(review_session_id or "").strip()
+    context_session = str(context.get("session_id") or "").strip()
+    if not review_id or context_session != review_id:
+        return None
+    return context
+
+
+def _detect_current_codex_session_id() -> str | None:
+    env_session = str(os.environ.get("CODEX_THREAD_ID") or "").strip()
+    if env_session:
+        return env_session
+    return None
+
+
+def _detect_env_window_label() -> tuple[str | None, str]:
+    for key in ("CODEX_WINDOW", "CODEX_WINDOW_ID", "CODEX_WINDOW_LABEL"):
+        label = _normalize_codex_window_label(os.environ.get(key))
+        if label != "未提供":
+            return label, key
+    return None, "unavailable"
+
+
+def _detect_current_codex_tty() -> tuple[str | None, str]:
+    pid = os.getpid()
+    seen: set[int] = set()
+    for _ in range(12):
+        if pid <= 1 or pid in seen:
+            break
+        seen.add(pid)
+        process = _read_process(pid)
+        if not process:
+            break
+        if _is_codex_process(process):
+            tty = _normalize_tty(process.get("tty"))
+            if tty:
+                return tty, "parent_process"
+        try:
+            pid = int(str(process.get("ppid") or "0"))
+        except ValueError:
+            break
+    return None, "unavailable"
+
+
+def _read_process(pid: int) -> dict[str, str] | None:
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "pid=", "-o", "ppid=", "-o", "tty=", "-o", "comm=", "-o", "args=", "-p", str(pid)],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    line = result.stdout.strip().splitlines()[0]
+    parts = line.split(maxsplit=4)
+    if len(parts) < 5:
+        return None
+    return {"pid": parts[0], "ppid": parts[1], "tty": parts[2], "comm": parts[3], "args": parts[4]}
+
+
+def _is_codex_process(process: dict[str, str]) -> bool:
+    comm = process.get("comm", "")
+    args = process.get("args", "")
+    return (
+        comm == "codex"
+        or "/bin/codex" in args
+        or "@openai/codex" in args
+        or "node_modules/@openai/codex" in args
+    )
+
+
+def _normalize_tty(value: str | None) -> str | None:
+    if not value or value == "?":
+        return None
+    tty = value.strip()
+    if not tty:
+        return None
+    return tty if tty.startswith("/dev/") else f"/dev/{tty}"
+
+
+def _detect_tmux_pane_for_tty(tty: str) -> dict[str, str]:
+    if not os.environ.get("TMUX"):
+        return {}
+    try:
+        result = subprocess.run(
+            [
+                "tmux",
+                "list-panes",
+                "-a",
+                "-F",
+                "#{session_name}:#{window_index}.#{pane_index}|#{pane_tty}|#{window_name}|#{pane_id}",
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    for line in result.stdout.splitlines():
+        parts = line.split("|", maxsplit=3)
+        if len(parts) != 4:
+            continue
+        window_label, pane_tty, window_name, pane_id = parts
+        if _normalize_tty(pane_tty) != tty:
+            continue
+        label = _normalize_codex_window_label(window_label)
+        if label == "未提供":
+            continue
+        return {
+            "window_label": label,
+            "pane_tty": _normalize_tty(pane_tty) or pane_tty,
+            "window_name": window_name,
+            "pane_id": pane_id,
+            "source": "parent_process_tty_tmux_list_panes",
+        }
+    return {}
+
+
+def _codex_window_session_matches(
+    *,
+    review_session_id: str | None,
+    current_session_id: str | None,
+    window_session_id: str | None,
+) -> bool:
+    review_id = str(review_session_id or "").strip()
+    if not review_id:
+        return False
+    bound_session = str(window_session_id or current_session_id or "").strip()
+    return bound_session == review_id
+
+
+def _normalize_codex_window_label(value: str | None) -> str:
+    if value is None:
+        return "未提供"
+    label = str(value).strip()
+    if not label:
+        return "未提供"
+    if not CODEX_WINDOW_LABEL_RE.fullmatch(label):
+        return "未提供"
+    return label
 
 
 def _field_text(payload: dict[str, Any], field: str, *, fallback: str) -> str:
@@ -646,6 +867,23 @@ def main(argv: list[str] | None = None) -> int:
         help="Legacy mode: create a Feishu doc and send a concise message with the doc link.",
     )
     parser.add_argument("--chat-id", default=DEFAULT_CHAT_ID, help="Feishu chat id.")
+    parser.add_argument(
+        "--codex-window",
+        default=None,
+        help=(
+            "Codex window label shown in the Feishu group-message summary, "
+            "for example codex:8. Falls back to CODEX_WINDOW, CODEX_WINDOW_ID, "
+            "then CODEX_WINDOW_LABEL."
+        ),
+    )
+    parser.add_argument(
+        "--codex-window-session",
+        default=None,
+        help=(
+            "Session id that the Codex window label belongs to. Defaults to CODEX_THREAD_ID. "
+            "The label is shown only when this session matches review_report.json session_id."
+        ),
+    )
     args = parser.parse_args(argv)
 
     path = Path(args.report_json)
@@ -661,6 +899,12 @@ def main(argv: list[str] | None = None) -> int:
             f"session_id={payload.get('session_id', 'n/a')}"
         )
     if args.prepare_feishu_delivery or args.send_feishu or args.send_feishu_doc:
+        codex_window = resolve_codex_window_label(
+            args.codex_window,
+            review_session_id=str(payload.get("session_id") or ""),
+            window_session_id=args.codex_window_session,
+            payload=payload,
+        )
         summary_path = (
             Path(args.summary_md) if args.summary_md else path.with_name("review_summary.md")
         )
@@ -670,6 +914,7 @@ def main(argv: list[str] | None = None) -> int:
             summary_text,
             doc_url=args.doc_url,
             attachment_path=summary_path,
+            codex_window=codex_window,
         )
         if args.prepare_feishu_delivery and not (args.send_feishu or args.send_feishu_doc):
             print(json.dumps(delivery_payload, ensure_ascii=False, indent=2))
@@ -710,6 +955,7 @@ def main(argv: list[str] | None = None) -> int:
             payload,
             summary_text=summary_text,
             doc_url=doc_url,
+            codex_window=codex_window,
         )
         if not doc_url:
             print(json.dumps(delivery_payload, ensure_ascii=False, indent=2))

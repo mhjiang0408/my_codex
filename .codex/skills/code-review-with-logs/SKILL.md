@@ -39,7 +39,7 @@ Run two modules in this exact order:
 2. **Context/report module**
    - Read repository context, provided logs, git diff metadata, `.codex_record/<session_id>/`, and optional `.codex_idea/<session_id>/`.
    - Emit both human-readable Markdown and machine-readable JSON.
-   - Perform `reliable check`: compare the running command and code/template changes with the task plan and, for research sessions, the idea plan.
+   - Perform `reliable check`: compare the running command and code/template changes with the task plan and, for research sessions, the idea plan. For experiment runs, also compare against the relevant `experiment-handbook` run method for runtime artifacts and parameter expectations.
    - Apply high-signal review discipline: flag only consequential, evidence-backed issues and
      avoid noisy style feedback.
 
@@ -198,8 +198,84 @@ HOME=/inspire/hdd/project/qproject-fundationmodel/public/mhjiang/DataFlyWheel/.l
 - Default `--send-feishu` must call only `lark-cli im +messages-send --text` and
   `lark-cli im +messages-send --file`. It must not create a Feishu document or call document
   permission APIs.
+- Window labels shown in the group message must be complete tmux pane-address labels in
+  `name:window.pane` form, such as `codex:1.0` or `codex:8.0`. Bare prefixes like `codex`,
+  window-only labels like `codex:8`, and tmux internal pane ids like `%41` are not valid display
+  window labels and must be treated as missing input.
+- Window labels must also be session-scoped: do not pass the sender/current window label when
+  sending a report for a different `review_report.json` `session_id`. If a complete window label
+  is known for the reviewed session, pass both `--codex-window <name:window.pane>` and
+  `--codex-window-session <review_session_id>`; otherwise omit `--codex-window` and let the
+  message show `窗口号：未提供`.
+- The send script must automatically detect the current Codex context before Feishu delivery.
+  It should infer the active session from report-local context or `CODEX_THREAD_ID`, and infer the
+  window label by matching the current Codex process TTY against `tmux list-panes -a` output in
+  `#{session_name}:#{window_index}.#{pane_index}` form. `CODEX_WINDOW*` environment values are
+  accepted only when they already use the same pane-address shape. Manual
+  `--codex-window-session` is an override/debug input, not a required normal-send parameter.
+- Newly generated `review_report.json` may include optional `codex_context` with the detected
+  session id, pane-address window label, pane TTY, tmux internal pane id, and window name. Feishu
+  delivery should prefer a matching report-local `codex_context` so that resending an old report
+  does not stamp the sender's current window onto the reviewed session; `pane_id` is auxiliary
+  debug evidence and must not replace the user-visible `窗口号`.
 - The legacy Feishu-document path is available only through explicit `--send-feishu-doc`. Do not
   use it for normal closeout unless the user explicitly asks for a Feishu document again.
+
+## Explicit HTML Review Report Contract
+
+When the user explicitly asks for an HTML report, this skill owns a reusable static HTML report
+pattern. This is an opt-in report-generation capability, not the default `code-review-with-logs`
+Markdown/JSON closeout path and not the default `code-review-with-logs` closeout path.
+
+Generic HTML reports must:
+- read existing review/runtime artifacts only unless the user explicitly asks for a new run;
+- write static HTML under `.codex/html_report/`;
+- use Chinese visible report text in this workspace, while preserving code identifiers, field
+  names, and paths when useful;
+- make the report object explicit: module, workflow, benchmark, incident, experiment, or policy;
+- show a structured overview, experiment score or result metrics when available, module
+  composition, integration/data-flow links, representative cases, evidence paths, and claim
+  boundaries;
+- when comparing controller modes or controller modules, make the module boundary explicit
+  first: show the controller's primary input object, primary output object, rule/rubric source,
+  runtime entrypoint, and the way the controller compiles into worker allocation or fallback;
+- visualize module upstream/downstream relationships first, so the report explains how one
+  module's primary input flows into the next module's primary output;
+- make single-input/single-output module interfaces explicit when the report describes a module
+  chain or pipeline;
+- present score or result trend before detailed rows when the user asks about experiment
+  outcomes, and keep per-task rows folded or secondary unless a per-task audit is requested;
+- use representative cases for detailed examples and keep full sample/task rows folded or
+  secondary unless the user explicitly asks for a per-sample audit;
+- render explicit rules, policies, or agent instructions inside folded code blocks, and pair each
+  block with a short natural-language explanation of what it does and how it connects to the
+  surrounding modules;
+- redact secret-like fields before rendering raw metadata, including token, bearer,
+  authorization, secret, and api-key keys or values.
+
+## HTML Script Placement Contract
+
+If a particular HTML report needs a helper script, the script belongs to the review artifact
+directory, not inside this skill.
+
+- Use a review-local script under `.codex/reviews/<review_id>/` when the HTML generation logic is
+  task-specific or when the user asks for a one-off browsable artifact tied to a single review.
+- Keep the skill itself limited to report-contract guidance, validation expectations, and
+  reproducible closeout semantics.
+- The skill must not grow a reusable task-specific renderer under `.codex/skills/code-review-with-logs/scripts/`.
+- The default `code-review-with-logs` closeout path still emits Markdown/JSON and appends the same
+  report to `.codex_record/<session_id>/progress.md`.
+- Suggested shape when a one-off helper is useful:
+  ```bash
+  uv run python .codex/reviews/<review_id>/render_html_report.py \
+    --review-report .codex/reviews/<review_id>/review_report.json \
+    --output .codex/html_report/<report-name>.html
+  ```
+- Testing guidance:
+  - Add or update focused unit tests/source assertions for the report's task-specific parser,
+    single-input/single-output module flow, folded rule blocks, and redaction.
+  - Do not rerun experiments just to render this report unless the user explicitly requests new
+    runtime evidence.
 
 ## Report Fields
 The Markdown report, JSON report, and progress.md appended report block must include these
@@ -257,19 +333,12 @@ Rules:
 - Missing required `.codex_record` files make reliable check `BLOCKED`.
 - Missing `.codex_idea` files are `NOT_APPLICABLE` unless the task is explicitly research/experiment work.
 - Compare command names, changed paths, and objective text against the task plan/progress/findings and any idea plan.
-- For qz training/deployment, tau bench / tau2, or ContextSwarm live experiment tasks, also read
-  referenced runtime artifacts from the workspace when present. Supported evidence includes qizhi run
-  `events.jsonl`, `artifacts.json`, `state.json`, `train_submit_payload.json`,
-  `deploy_submit_payload.json`, deployment `launch_manifest.json` /
-  `runtime_resolved_manifest.json`, and tau2 `tau2-command.json`, `summary.json`, `report.json`,
-  or `results.txt`; ContextSwarm live evidence includes `live_preflight_report.json`,
-  `live_context_report.json`, and `controller_state.json`.
-- If the real task artifacts use custom names such as `swe_bench_0521.json`,
-  `tau_bench_0521.json`, or `train_retry_candidates.json`, add a small canonical manifest with a
-  supported name such as `report.json` or `summary.json` and reference the detailed custom
-  artifacts from it. The reliable check discovers runtime evidence by filename from task
-  records, log paths, changed paths, objective text, and test commands; custom filenames alone
-  are not enough for automatic qz/tau runtime-evidence detection.
+- For experiment tasks, read the matched `experiment-handbook` run method and compare actual
+  command/runtime evidence against that method's command, artifact, validation, and review-evidence
+  contract.
+- Runtime artifacts can use custom names when they are explicitly referenced by task records,
+  log paths, changed paths, objective text, test commands, or the matched handbook method. The
+  review skill must not rely on a hard-coded experiment-family artifact whitelist.
 - If the command or code/template changes cannot be mapped to the task plan or idea plan, mark reliable check `FAIL` and cite the mismatch evidence.
 - If evidence is insufficient to decide, mark `BLOCKED` and state exactly which artifact is missing.
 - Reliable-check reviewer-facing output must be Simplified Chinese and multi-line in Markdown and
@@ -279,32 +348,27 @@ Rules:
 - Reliable-check JSON artifacts may keep machine-stable English keys, but must include Chinese
   review fields such as `reviewer_markdown`, `checks[*].display_name`, `checks[*].status_text`,
   `checks[*].details`, `context_files[*].label_zh`, and `context_files[*].status_text`.
-- Command consistency must check more than token overlap. When task/idea records specify command
-  or experiment parameters such as `--model qwen`, `--dataset agentbench`, or `--seed 7`, compare
-  the actual review/test commands against those required parameter values. Missing or mismatched
-  required parameters make reliable check `FAIL`.
-- Training/deployment/benchmark parameters must be compared against actual runtime artifacts, not
-  only review/test commands. For example:
-  - qz training: compare `--model-name`, `--dataset-path`, `--global-batch-size`,
-    `--rollout-batch-size`, `--run-tag`, and parallelism flags when the task/idea requires them.
-  - qz deployment: compare model/service identifiers, `--base-url` / API base, replica or node
-    count, and endpoint/service-name fields when the task/idea requires them.
-  - tau bench / tau2: compare benchmark name, model, domain, run id/tag, concurrency/trial count,
-    status, and metrics such as `average_reward` / `pass_k` when they are part of the idea.
-- If a task is explicitly a qz/tau/ContextSwarm live experiment but no readable runtime artifact
-  is available, mark the runtime evidence subcheck `BLOCKED` and name the missing artifact class.
-  Ordinary implementation tasks, including reliable-check skill changes tested with fixtures,
-  must remain `NOT_APPLICABLE` for this runtime-evidence subcheck.
+- Command consistency must check more than token overlap. When task/idea records or
+  `experiment-handbook` run methods specify command or experiment parameters such as `--model qwen`,
+  `--dataset agentbench`, `--seed 7`, `task_count=12`, or `run_tag=...`, compare the actual
+  review/test commands and runtime artifact facts against those required values. Missing or
+  mismatched required parameters make reliable check `FAIL`.
+- Training/deployment/benchmark/ICPC/SWE-like parameters must be compared against actual runtime
+  artifacts, not only review/test commands. The specific fields come from the matched
+  `experiment-handbook` run method or from explicit task records. Do not hard-code experiment-family
+  branches in the review skill.
+- If a task is explicitly an experiment run but no matching handbook method or readable runtime
+  artifact is available, mark the runtime evidence subcheck `BLOCKED` and name the missing contract
+  or artifact class. Ordinary implementation tasks, including reliable-check skill changes tested
+  with fixtures, must remain `NOT_APPLICABLE` for this runtime-evidence subcheck.
 - Runtime evidence summaries must redact secrets. Do not copy `api_key`, bearer tokens,
   authorization headers, or raw endpoint credentials into Markdown, JSON evidence, progress
   reports, or Feishu messages.
-- Runtime evidence discovery must be reference-driven. For qz/tau/ContextSwarm live tasks, read only runtime
-  artifacts explicitly referenced by task records, logs, test commands, or changed paths. Do not
-  glob shared history directories such as `.codex/skills/qizhi-rollout-train-deploy-experiment/runs/*`
-  just because the task mentions training or qz; unrelated historical runs can pollute the
-  reliable check and may contain stale secrets. If a qz/tau task has no explicit readable
-  runtime artifact, mark the runtime-evidence subcheck `BLOCKED` and name the missing artifact
-  class.
+- Runtime evidence discovery must be reference-driven. Read only runtime artifacts explicitly
+  referenced by task records, logs, test commands, changed paths, objective text, or matched
+  handbook run methods. Do not glob shared history directories such as `.codex/skills/.../runs/*`
+  just because a task mentions training, benchmarking, ICPC, SWE, or deployment; unrelated
+  historical runs can pollute the reliable check and may contain stale secrets.
 - When the same `review_id` is rerun, replace the existing marked block in
   `.codex_record/<session_id>/progress.md` instead of appending a duplicate block. This is the
   recovery path for regenerated reports after redaction or evidence-scope fixes.
@@ -335,9 +399,8 @@ Rules:
   closeout blocks supply expected changed paths or expected modification methods for the current
   review.
 - Read-only data-quality audits for training datasets are research-relevant when they explicitly
-  map to an idea/hypothesis, but they are not qz/tau runtime tasks by themselves. Do not require
-  qz training/deployment/tau artifacts for a parquet-only audit when the plan says no training or
-  benchmark was launched.
+  map to an idea/hypothesis, but they are not experiment runtime tasks by themselves. Do not
+  require runtime artifacts for a parquet-only audit when the plan says no experiment was launched.
 - Keep machine-stable protocol fields unchanged: status enums remain `PASS` / `FAIL` /
   `BLOCKED` / `NOT_APPLICABLE`, the report field/key remains `reliable check`, check ids stay in
   `checks[*].name`, and context file ids/statuses stay in `context_files[*].label` /

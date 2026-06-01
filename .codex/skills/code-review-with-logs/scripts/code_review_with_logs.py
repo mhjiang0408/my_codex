@@ -64,6 +64,7 @@ REPORT_FIELDS = [
 ]
 
 VALID_STATUSES = {"PASS", "FAIL", "BLOCKED", "NOT_APPLICABLE"}
+CODEX_WINDOW_LABEL_RE = re.compile(r"^[^:\s]+:\d+\.\d+$")
 
 CHECK_DISPLAY_NAMES = {
     "codex_record_presence": "会话记录完整性",
@@ -224,10 +225,45 @@ RUNTIME_EVIDENCE_FILENAMES = {
     "results.txt",
 }
 
+GENERIC_RUNTIME_EVIDENCE_SUFFIXES = {
+    ".csv",
+    ".json",
+    ".jsonl",
+    ".log",
+    ".md",
+    ".txt",
+}
+
+EXPERIMENT_CLAIM_MARKERS = (
+    "benchmark",
+    "bench",
+    "deploy",
+    "deployment",
+    "eval",
+    "evaluation",
+    "experiment",
+    "run ",
+    "smoke",
+    "train",
+    "training",
+    "复现",
+    "实验",
+    "评测",
+    "测试集",
+    "运行",
+    "训练",
+    "部署",
+)
+
 RUNTIME_EVIDENCE_PATH_RE = re.compile(
-    r"(?P<path>(?:[./~]|/|runs/|logs/|artifacts/|Agentic-Evaluation-infra/)[^\s`'\"，。；,]+(?:"
+    r"(?<![A-Za-z0-9_.-])(?P<path>(?:[./~]|/|runs/|logs/|artifacts/|Agentic-Evaluation-infra/)[^\s`'\"，。；,]+(?:"
     + "|".join(re.escape(name) for name in sorted(RUNTIME_EVIDENCE_FILENAMES))
     + r"))"
+)
+
+GENERIC_EVIDENCE_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])(?P<path>(?:[./~]|/|data/|runs/|logs/|artifacts/|Agentic-Evaluation-infra/)[^\s`'\"，。；,]+"
+    r"\.(?:jsonl?|txt|log|csv|md))"
 )
 
 QZ_TRAIN_PARAM_NAMES = {
@@ -370,6 +406,7 @@ RUNTIME_FACT_KEYWORDS = (
     "service_name",
     "simulation_json",
     "skipped_reason",
+    "seed",
     "scheduler",
     "status",
     "stopped_due_to_timeouts",
@@ -460,6 +497,28 @@ class RuntimeEvidence:
 
 
 @dataclass(frozen=True)
+class ExperimentRunMethod:
+    title: str
+    reference_path: str
+    body: str
+    use_when: str
+    command_record: str
+    artifacts: str
+    validation: str
+    review_evidence: str
+
+    def to_reliable_check_json(self) -> dict[str, str]:
+        return {
+            "title": self.title,
+            "reference_path": self.reference_path,
+            "use_when": self.use_when,
+            "artifacts": self.artifacts,
+            "validation": self.validation,
+            "review_evidence": self.review_evidence,
+        }
+
+
+@dataclass(frozen=True)
 class ReviewOutput:
     review_id: str
     session_dir: Path
@@ -481,6 +540,7 @@ class ReviewBuildState:
     context_files: list[ContextFile] = field(default_factory=list)
     log_summaries: list[dict[str, Any]] = field(default_factory=list)
     runtime_evidence: list[RuntimeEvidence] = field(default_factory=list)
+    experiment_methods: list[ExperimentRunMethod] = field(default_factory=list)
     diff_summary: dict[str, Any] = field(default_factory=dict)
     unit_test_results: dict[str, Any] = field(default_factory=dict)
     reliability_results: dict[str, Any] = field(default_factory=dict)
@@ -510,6 +570,7 @@ def run(input_data: ReviewInput) -> ReviewOutput:
     state.unit_test_results = _run_unit_tests(state)
     state.context_files = _read_session_context(state)
     state.log_summaries = _read_logs(state)
+    state.experiment_methods = _read_experiment_handbook_methods(state)
     state.runtime_evidence = _read_runtime_evidence(state)
     state.diff_summary = _collect_diff_summary(state)
     state.reliability_results = _build_reliability_results(state)
@@ -841,7 +902,10 @@ def _read_session_context(state: ReviewBuildState) -> list[ContextFile]:
     context_files: list[ContextFile] = []
     for label, path, requirement in candidates:
         if path.is_file():
-            excerpt = _clip(path.read_text(encoding="utf-8", errors="replace"), limit=6000)
+            excerpt = _clip(
+                _redact_secret_text(path.read_text(encoding="utf-8", errors="replace")),
+                limit=6000,
+            )
             status = "present"
         else:
             excerpt = ""
@@ -871,7 +935,7 @@ def _read_logs(state: ReviewBuildState) -> list[dict[str, Any]]:
                 "path": _relativize(path, workspace),
                 "status": "present",
                 "line_count": len(text.splitlines()),
-                "excerpt": _clip(text, limit=4000),
+                "excerpt": _clip(_redact_secret_text(text), limit=4000),
             }
             state.command_trace.append(f"read:{summary['path']}")
         else:
@@ -885,7 +949,159 @@ def _read_logs(state: ReviewBuildState) -> list[dict[str, Any]]:
     return summaries
 
 
+def _read_experiment_handbook_methods(state: ReviewBuildState) -> list[ExperimentRunMethod]:
+    workspace = state.input_data.workspace.resolve()
+    references_dir = workspace / ".codex" / "skills" / "experiment-handbook" / "references"
+    if not references_dir.is_dir():
+        return []
+    review_text = _experiment_review_text(state)
+    all_methods: list[ExperimentRunMethod] = []
+    for path in sorted(references_dir.glob("*.md")):
+        text = _redact_secret_text(path.read_text(encoding="utf-8", errors="replace"))
+        all_methods.extend(_parse_experiment_run_methods(text, path, workspace))
+    scored = [
+        (method, _experiment_method_match_score(method, review_text))
+        for method in all_methods
+    ]
+    matched_with_score = [(method, score) for method, score in scored if score > 0]
+    if matched_with_score:
+        best_score = max(score for _, score in matched_with_score)
+        matched = [
+            method
+            for method, score in matched_with_score
+            if score == best_score or (best_score >= 4 and score >= best_score - 1)
+        ]
+    else:
+        matched = []
+    if not matched and _looks_like_experiment_task(review_text):
+        return []
+    return matched
+
+
+def _experiment_review_text(state: ReviewBuildState) -> str:
+    parts: list[str] = []
+    parts.extend(item.excerpt for item in state.context_files if item.status == "present")
+    parts.extend(str(item.get("excerpt", "")) for item in state.log_summaries if item.get("status") == "present")
+    parts.extend(state.input_data.test_commands)
+    parts.extend(str(path) for path in state.input_data.log_paths)
+    parts.extend(state.input_data.changed_paths)
+    if state.input_data.objective:
+        parts.append(state.input_data.objective)
+    return "\n".join(parts).lower()
+
+
+def _experiment_method_matches_review(method: ExperimentRunMethod, review_text: str) -> bool:
+    return _experiment_method_match_score(method, review_text) > 0
+
+
+def _experiment_method_match_score(method: ExperimentRunMethod, review_text: str) -> int:
+    if not review_text:
+        return 0
+    score = 0
+    title = method.title.lower()
+    if title and title in review_text:
+        score += 4
+    if "full12" in title and "full12" in review_text:
+        score += 4
+    method_artifacts = _extract_artifact_names_for_method(method)
+    artifact_hits = sum(1 for artifact in method_artifacts if artifact and artifact.lower() in review_text)
+    if method_artifacts:
+        score += artifact_hits * 2
+        score -= max(0, len(method_artifacts) - artifact_hits)
+    method_text = "\n".join(
+        [
+            method.title,
+            method.use_when,
+            method.command_record,
+            method.artifacts,
+            method.validation,
+            method.review_evidence,
+        ]
+    ).lower()
+    matches = _overlap_matches(review_text, method_text)
+    if len(matches) >= 2:
+        score += 2
+    elif len(matches) == 1 and any(marker in review_text for marker in EXPERIMENT_CLAIM_MARKERS):
+        score += 1
+    identifier_matches = _method_identifier_matches(review_text, method_text)
+    score += min(len(identifier_matches), 4)
+    score += sum(2 for token in identifier_matches if token.startswith("agent_label_"))
+    # A reference file path in changed paths is useful context, but it must not make every run
+    # method in that handbook file authoritative for parameter consistency.
+    if method.reference_path.lower() in review_text and score > 0:
+        score += 1
+    return score
+
+
+def _extract_artifact_names_for_method(method: ExperimentRunMethod) -> set[str]:
+    text = "\n".join([method.artifacts, method.validation, method.review_evidence])
+    names = {
+        match.group(1)
+        for match in re.finditer(r"`([^`]+?\.(?:json|jsonl|sqlite3|cpp|md|txt|log))`", text)
+    }
+    names.update(
+        Path(match.group(1)).name
+        for match in re.finditer(r"`([^`]+?\.(?:json|jsonl|sqlite3|cpp|md|txt|log))`", text)
+    )
+    return {name for name in names if name}
+
+
+def _method_identifier_matches(review_text: str, method_text: str) -> set[str]:
+    method_ids = {
+        token.lower()
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9_/-]{5,}", method_text)
+        if ("_" in token or "/" in token) and not token.startswith("http")
+    }
+    review_lowered = review_text.lower()
+    return {token for token in method_ids if token in review_lowered}
+
+
+def _parse_experiment_run_methods(text: str, path: Path, workspace: Path) -> list[ExperimentRunMethod]:
+    matches = list(re.finditer(r"^## Run Method:\s*(.+?)\s*$", text, flags=re.MULTILINE))
+    methods: list[ExperimentRunMethod] = []
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        body = text[start:end].strip()
+        methods.append(
+            ExperimentRunMethod(
+                title=match.group(1).strip(),
+                reference_path=_relativize(path, workspace),
+                body=_clip(body, limit=6000),
+                use_when=_extract_markdown_field(body, "Use when"),
+                command_record=_extract_markdown_field(body, "Command record"),
+                artifacts=_extract_markdown_field(body, "Artifacts"),
+                validation=_extract_markdown_field(body, "Validation"),
+                review_evidence=_extract_markdown_field(body, "Review evidence"),
+            )
+        )
+    return methods
+
+
+def _extract_markdown_field(body: str, field_name: str) -> str:
+    lines = body.splitlines()
+    start: int | None = None
+    pattern = re.compile(rf"^\s*-\s*{re.escape(field_name)}\s*:\s*(.*)$", flags=re.IGNORECASE)
+    initial = ""
+    for index, line in enumerate(lines):
+        match = pattern.match(line)
+        if match:
+            start = index
+            initial = match.group(1).strip()
+            break
+    if start is None:
+        return ""
+    collected = [initial] if initial else []
+    for line in lines[start + 1 :]:
+        if re.match(r"^\s*-\s+[A-Z][A-Za-z /-]*\s*:", line) and not line.startswith("  "):
+            break
+        collected.append(line.rstrip())
+    return _clip("\n".join(collected).strip(), limit=3000)
+
+
 def _read_runtime_evidence(state: ReviewBuildState) -> list[RuntimeEvidence]:
+    if _looks_like_reliable_check_implementation_task(state.input_data.objective or ""):
+        return []
     workspace = state.input_data.workspace.resolve()
     candidates = _runtime_evidence_candidate_paths(state)
     evidence: list[RuntimeEvidence] = []
@@ -939,7 +1155,7 @@ def _explicit_runtime_log_paths(state: ReviewBuildState, seen: set[str]) -> list
     workspace = state.input_data.workspace.resolve()
     paths: list[Path] = []
     for raw_path in state.input_data.log_paths:
-        if raw_path.name not in RUNTIME_EVIDENCE_FILENAMES:
+        if not _looks_like_runtime_artifact_path(raw_path):
             continue
         path = raw_path if raw_path.is_absolute() else workspace / raw_path
         rel_path = _relativize(path, workspace)
@@ -955,8 +1171,15 @@ def _runtime_evidence_candidate_paths(state: ReviewBuildState) -> list[Path]:
     for text in _runtime_reference_texts(state):
         for match in RUNTIME_EVIDENCE_PATH_RE.finditer(text):
             path = Path(match.group("path").strip().strip("`"))
-            if path.name in RUNTIME_EVIDENCE_FILENAMES:
+            if _looks_like_runtime_artifact_path(path):
                 paths.append(path)
+        for match in GENERIC_EVIDENCE_PATH_RE.finditer(text):
+            path = Path(match.group("path").strip().strip("`"))
+            if _looks_like_runtime_artifact_path(path):
+                paths.append(path)
+    for path in _read_handbook_referenced_artifacts(state):
+        if _looks_like_runtime_artifact_path(path):
+            paths.append(path)
 
     resolved: list[Path] = []
     seen: set[str] = set()
@@ -972,8 +1195,23 @@ def _runtime_evidence_candidate_paths(state: ReviewBuildState) -> list[Path]:
     return resolved
 
 
+def _read_handbook_referenced_artifacts(state: ReviewBuildState) -> list[Path]:
+    workspace = state.input_data.workspace.resolve()
+    artifacts: list[Path] = []
+    for method in state.experiment_methods:
+        for text in (method.artifacts, method.validation, method.review_evidence):
+            for match in GENERIC_EVIDENCE_PATH_RE.finditer(text):
+                path = Path(match.group("path").strip().strip("`"))
+                resolved = _resolve_workspace_path(path, workspace)
+                if _is_path_inside_workspace(resolved, workspace):
+                    artifacts.append(path)
+    return list(dict.fromkeys(artifacts))
+
+
 def _runtime_reference_texts(state: ReviewBuildState) -> list[str]:
     texts = [item.excerpt for item in state.context_files if item.status == "present"]
+    for method in state.experiment_methods:
+        texts.extend([method.artifacts, method.validation, method.review_evidence])
     texts.extend(
         str(summary.get("excerpt", ""))
         for summary in state.log_summaries
@@ -988,9 +1226,16 @@ def _runtime_reference_texts(state: ReviewBuildState) -> list[str]:
 
 def _has_explicit_runtime_evidence_path(text: str) -> bool:
     for match in RUNTIME_EVIDENCE_PATH_RE.finditer(text):
-        if Path(match.group("path").strip().strip("`")).name in RUNTIME_EVIDENCE_FILENAMES:
+        if _looks_like_runtime_artifact_path(Path(match.group("path").strip().strip("`"))):
+            return True
+    for match in GENERIC_EVIDENCE_PATH_RE.finditer(text):
+        if _looks_like_runtime_artifact_path(Path(match.group("path").strip().strip("`"))):
             return True
     return False
+
+
+def _looks_like_runtime_artifact_path(path: Path) -> bool:
+    return path.name in RUNTIME_EVIDENCE_FILENAMES or path.suffix.lower() in GENERIC_RUNTIME_EVIDENCE_SUFFIXES
 
 
 def _resolve_workspace_path(path: Path, workspace: Path) -> Path:
@@ -1012,13 +1257,13 @@ def _parse_runtime_evidence_file(path: Path, workspace: Path) -> RuntimeEvidence
     text = path.read_text(encoding="utf-8", errors="replace")
     if path.name == "events.jsonl":
         commands, facts, excerpt = _parse_events_jsonl_runtime(text)
+    elif path.suffix == ".jsonl":
+        commands, facts, excerpt = _parse_jsonl_runtime(text)
     elif path.suffix == ".json":
         payload = _loads_json_safely(text)
         commands, facts, excerpt = _parse_json_runtime_payload(payload, path.name)
     else:
-        commands = _extract_runtime_commands_from_text(text)
-        facts = _extract_runtime_facts_from_text(text)
-        excerpt = _clip(_redact_secret_text(text), limit=1200)
+        commands, facts, excerpt = _parse_text_runtime_payload(text)
     parameters = _extract_observed_command_parameters(commands)
     facts = _normalize_runtime_facts(facts)
     for name, values in _parameters_from_runtime_facts(facts).items():
@@ -1062,6 +1307,27 @@ def _parse_events_jsonl_runtime(text: str) -> tuple[list[str], dict[str, Any], s
     return _dedupe_list(commands), facts, excerpt
 
 
+def _parse_jsonl_runtime(text: str) -> tuple[list[str], dict[str, Any], str]:
+    commands: list[str] = []
+    facts: dict[str, Any] = {}
+    excerpts: list[str] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        payload = _loads_json_safely(line)
+        if not isinstance(payload, dict):
+            redacted = _redact_secret_text(line)
+            excerpts.append(redacted)
+            commands.extend(_extract_runtime_commands_from_text(redacted))
+            _merge_fact_dict(facts, _extract_runtime_facts_from_text(redacted))
+            continue
+        commands.extend(_collect_runtime_commands_from_mapping(payload))
+        _merge_fact_dict(facts, _extract_runtime_facts_from_mapping(payload))
+        excerpts.append(_runtime_json_excerpt(payload, "jsonl-row"))
+    excerpt = _clip("\n".join(excerpts[-8:]), limit=1600)
+    return _dedupe_list(commands), facts, excerpt
+
+
 def _parse_json_runtime_payload(payload: Any, filename: str) -> tuple[list[str], dict[str, Any], str]:
     commands: list[str] = []
     facts: dict[str, Any] = {}
@@ -1074,6 +1340,12 @@ def _parse_json_runtime_payload(payload: Any, filename: str) -> tuple[list[str],
     else:
         excerpt = _clip(_redact_secret_text(json.dumps(payload, ensure_ascii=False)), limit=1200)
     return _dedupe_list(commands), facts, excerpt
+
+
+def _parse_text_runtime_payload(text: str) -> tuple[list[str], dict[str, Any], str]:
+    commands = _extract_runtime_commands_from_text(text)
+    facts = _extract_runtime_facts_from_text(text)
+    return _dedupe_list(commands), facts, _clip(_redact_secret_text(text), limit=1200)
 
 
 def _runtime_json_excerpt(payload: dict[str, Any], filename: str) -> str:
@@ -1153,6 +1425,8 @@ def _extract_runtime_facts_from_text(text: str) -> dict[str, Any]:
         "benchmark": r"(?:benchmark)\s*[=:]\s*['\"]?([A-Za-z0-9._/\-]+)",
         "run_id": r"(?:run_id|run-id)\s*[=:]\s*['\"]?([A-Za-z0-9._/\-]+)",
         "run_tag": r"(?:run_tag|run-tag)\s*[=:]\s*['\"]?([A-Za-z0-9._/\-]+)",
+        "seed": r"(?:seed)\s*[=:]\s*([0-9]+)",
+        "task_count": r"(?:task_count|task-count)\s*[=:]\s*([0-9]+)",
         "config_path": r"(?:config_path|config-path|k8s-config)\s*[=:]\s*['\"]?([^\s,'\"]+)",
         "service_name": r"(?:service_name|service-name)\s*[=:]\s*['\"]?([A-Za-z0-9._/\-]+)",
         "base_url": r"(?:base_url|base-url|api_base|api-base)\s*[=:]\s*['\"]?([^\s,'\"]+)",
@@ -1282,11 +1556,14 @@ def _parameters_from_runtime_facts(facts: dict[str, Any]) -> dict[str, list[str]
         "user_llm": "--user-llm",
         "user_model": "--user-model",
         "dataset_path": "--dataset-path",
+        "dataset": "--dataset",
         "benchmark": "--benchmark",
         "domain": "--domain",
         "domains": "--domain",
         "run_id": "--run-id",
         "run_tag": "--run-tag",
+        "seed": "--seed",
+        "task_count": "--task-count",
         "service_name": "--service-name",
         "base_url": "--base-url",
         "replicas": "--replicas",
@@ -1299,7 +1576,23 @@ def _parameters_from_runtime_facts(facts: dict[str, Any]) -> dict[str, list[str]
         if fact_key not in facts:
             continue
         values = facts[fact_key] if isinstance(facts[fact_key], list) else [facts[fact_key]]
-        parameters[param_name] = _dedupe_list(str(value) for value in values if value not in (None, ""))
+        parameters[param_name] = _dedupe_list(
+            _normalize_parameter_comparison_value(str(value))
+            for value in values
+            if value not in (None, "")
+        )
+    for fact_key, fact_value in facts.items():
+        if _is_secret_key(fact_key):
+            continue
+        param_name = _fact_key_to_parameter_name(fact_key)
+        values = fact_value if isinstance(fact_value, list) else [fact_value]
+        scalar_values = [
+            _normalize_parameter_comparison_value(str(value))
+            for value in values
+            if value not in (None, "") and not isinstance(value, (dict, list))
+        ]
+        if scalar_values:
+            parameters[param_name] = _dedupe_list([*parameters.get(param_name, []), *scalar_values])
     return parameters
 
 
@@ -1339,8 +1632,7 @@ def _runtime_evidence_summary(item: RuntimeEvidence) -> str:
     if item.parameters:
         rendered_params = []
         for name in sorted(item.parameters):
-            if name in RUNTIME_PARAM_NAMES or item.label in {"contextswarm_live", "tau_bench"}:
-                rendered_params.append(f"{name}={', '.join(item.parameters[name])}")
+            rendered_params.append(f"{name}={', '.join(item.parameters[name])}")
         if rendered_params:
             parts.append("参数：" + "；".join(rendered_params))
     fact_parts = _runtime_fact_summary_parts(item.facts)
@@ -1436,13 +1728,19 @@ def _redact_secret_value(value: Any) -> Any:
 
 
 def _redact_secret_text(text: str) -> str:
+    secret_flag = r"--[A-Za-z0-9_-]*(?:api-?key|token|secret|authorization|bearer)[A-Za-z0-9_-]*"
     redacted = re.sub(
-        r"(?i)(--(?:api-key|token|secret)\s+)(\S+)",
+        rf"(?i)({secret_flag}\s+)(\S+)",
         r"\1[REDACTED]",
         text,
     )
     redacted = re.sub(
-        r"(?i)([\"']--(?:api-key|token|secret)[\"']\s*,\s*[\"'])([^\"']+)",
+        rf"(?i)([\"']{secret_flag}[\"']\s*,\s*[\"'])([^\"']+)",
+        r"\1[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        rf"(?i)({secret_flag}=)([^\s,;\"']+)",
         r"\1[REDACTED]",
         redacted,
     )
@@ -1452,11 +1750,17 @@ def _redact_secret_text(text: str) -> str:
         redacted,
     )
     redacted = re.sub(
+        r"(?i)([\"']?[A-Z0-9_]*(?:API_?KEY|TOKEN|SECRET|AUTHORIZATION|BEARER)[A-Z0-9_]*[\"']?\s*[:=]\s*[\"']?)([^'\"\s,}]+)",
+        r"\1[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
         r"(?i)((?:[A-Z0-9_]*)(?:API_?KEY|TOKEN|SECRET)\s*=\s*[\"']?)([^'\"\s,;]+)",
         r"\1[REDACTED]",
         redacted,
     )
     redacted = re.sub(r"(?i)bearer\s+[A-Za-z0-9._\-]+", "Bearer [REDACTED]", redacted)
+    redacted = re.sub(r"\bsk-[A-Za-z0-9_-]{10,}\b", "[REDACTED]", redacted)
     redacted = re.sub(
         (
             r"(?<![A-Za-z0-9_/\-])"
@@ -1551,6 +1855,7 @@ def _build_reliability_results(state: ReviewBuildState) -> dict[str, Any]:
         ]
     ).lower()
     runtime_text = _runtime_alignment_text(state.runtime_evidence)
+    handbook_text = _experiment_handbook_alignment_text(state.experiment_methods)
     command_text = "\n".join(
         state.input_data.test_commands + state.input_data.changed_paths
     ).lower()
@@ -1561,19 +1866,17 @@ def _build_reliability_results(state: ReviewBuildState) -> dict[str, Any]:
             objective,
             evidence_text,
             runtime_text.lower(),
+            handbook_text.lower(),
         ]
     )
-    implementation_like = _looks_like_reliable_check_implementation_task(
-        "\n".join([objective, "\n".join(state.input_data.changed_paths).lower()])
-    )
+    implementation_like = _looks_like_reliable_check_implementation_task(objective)
     research_like = _looks_like_research_task(command_text + "\n" + objective) and not implementation_like
-    runtime_required = (
-        _looks_like_runtime_task(classification_text)
-        and not implementation_like
-        and not _looks_like_readonly_data_audit_task(classification_text)
-    )
+    runtime_required = _experiment_runtime_required(classification_text, state)
     parameter_comparison = _compare_required_command_parameters(
-        focused_context_files, state.input_data.test_commands, state.runtime_evidence
+        focused_context_files,
+        state.input_data.test_commands,
+        state.runtime_evidence,
+        [] if implementation_like else state.experiment_methods,
     )
     expected_paths = _extract_expected_changed_paths(focused_context_files)
     actual_paths = _actual_changed_paths(state)
@@ -1727,6 +2030,7 @@ def _build_reliability_results(state: ReviewBuildState) -> dict[str, Any]:
     checks.append(
         _build_runtime_evidence_check(
             state.runtime_evidence,
+            matched_methods=state.experiment_methods,
             runtime_required=runtime_required,
             implementation_like=implementation_like,
         )
@@ -1777,6 +2081,7 @@ def _build_reliability_results(state: ReviewBuildState) -> dict[str, Any]:
         "context_files": [item.to_reliable_check_json() for item in state.context_files],
         "logs": state.log_summaries,
         "runtime_evidence": [item.to_reliable_check_json() for item in state.runtime_evidence],
+        "matched_experiment_methods": [item.to_reliable_check_json() for item in state.experiment_methods],
         "required_command_parameters": parameter_comparison["required"],
         "observed_command_parameters": parameter_comparison["observed"],
         "observed_command_parameter_sources": parameter_comparison["observed_sources"],
@@ -1854,8 +2159,33 @@ def _build_parameter_consistency_check(
 
 
 def _build_runtime_evidence_check(
-    runtime_evidence: list[RuntimeEvidence], *, runtime_required: bool, implementation_like: bool
+    runtime_evidence: list[RuntimeEvidence],
+    *,
+    matched_methods: list[ExperimentRunMethod],
+    runtime_required: bool,
+    implementation_like: bool,
 ) -> dict[str, Any]:
+    if implementation_like:
+        return _reliable_check_item(
+            "experiment_runtime_evidence",
+            "NOT_APPLICABLE",
+            "当前是 reliable check / skill 实现任务，不要求实际实验运行产物。",
+            evidence=[
+                "检测到实现任务语义，实验运行产物读取逻辑通过单测 fixture 和 system-contract 验收。"
+            ],
+            runtime_evidence=[],
+        )
+    if runtime_required and not matched_methods:
+        return _reliable_check_item(
+            "experiment_runtime_evidence",
+            "BLOCKED",
+            "任务明确要求实验/评测运行，但没有找到可对照的 experiment-handbook run method。",
+            evidence=[
+                "任务记录、命令或目标中出现实验语义，但未匹配到 experiment-handbook 中可核对的 Run Method。",
+                "需要把实验契约写入 experiment-handbook，然后让 review 根据 handbook 对照运行证据。",
+            ],
+            runtime_evidence=[item.to_reliable_check_json() for item in runtime_evidence],
+        )
     present = [item for item in runtime_evidence if item.status == "present"]
     missing = [item for item in runtime_evidence if item.status != "present"]
     blocking_missing = [item for item in missing if _runtime_missing_evidence_blocks(item, present)]
@@ -1883,39 +2213,69 @@ def _build_runtime_evidence_check(
             "BLOCKED",
             "当前任务看起来需要运行产物证据，但没有可读取的实际运行产物。",
             evidence=[
-                "任务/idea/日志提到了 qz、训练、部署、tau、benchmark 或 ContextSwarm live 运行，但未发现可读取的运行产物。",
-                "需要在任务记录或 log 中引用实际运行产物路径，才能核对运行参数、状态和指标是否符合计划。",
+                "任务/idea/日志/handbook 提到了实验运行，但未发现可读取的运行产物。",
+                "需要在任务记录或 log 中引用 experiment-handbook 期望的实际运行产物路径，才能核对运行参数、状态和指标是否符合计划。",
             ],
             runtime_evidence=[],
         )
     return _reliable_check_item(
         "experiment_runtime_evidence",
         "NOT_APPLICABLE",
-        (
-            "当前是 reliable check / skill 实现任务，不要求实际 qz/tau 运行产物。"
-            if implementation_like
-            else "当前任务未要求 qz 训练/部署、tau bench 或 ContextSwarm live 运行证据。"
-        ),
-        evidence=[
-            (
-                "检测到实现任务语义，运行产物读取逻辑只通过单测 fixture 验收。"
-                if implementation_like
-                else "任务记录和 review 输入中没有必须读取实验运行产物的要求。"
-            )
-        ],
+        "当前任务未要求实验运行证据。",
+        evidence=["任务记录和 review 输入中没有必须读取实验运行产物的要求。"],
         runtime_evidence=[],
     )
+
+
+def _experiment_runtime_required(text: str, state: ReviewBuildState) -> bool:
+    if _looks_like_reliable_check_implementation_task(state.input_data.objective or ""):
+        return False
+    if not _looks_like_experiment_task(text):
+        return False
+    return True
+
+
+def _looks_like_experiment_task(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in EXPERIMENT_CLAIM_MARKERS)
+
+
+def _experiment_handbook_alignment_text(methods: list[ExperimentRunMethod]) -> str:
+    chunks: list[str] = []
+    for method in methods:
+        chunks.extend([method.title, method.use_when, method.command_record, method.artifacts, method.validation, method.review_evidence])
+    return "\n".join(chunks)
 
 
 def _runtime_missing_evidence_blocks(item: RuntimeEvidence, present: list[RuntimeEvidence]) -> bool:
     if item.status != "missing_optional":
         return True
+    if _is_auxiliary_runtime_reference(item.path):
+        return False
     item_path = Path(item.path)
     item_name = item_path.name
     return not any(Path(present_item.path).name == item_name and _is_data_swarm_path(present_item.path) for present_item in present)
 
 
+def _is_auxiliary_runtime_reference(path: str) -> bool:
+    normalized = Path(path).as_posix()
+    auxiliary_exact = {
+        "data/gateway.jsonl",
+        "data/project-registrations.json",
+        "tmp/gateway-service/manifest.lock.json",
+    }
+    auxiliary_suffixes = (
+        "/gateway-data/gateway.jsonl",
+        "/gateway-data/project-registrations.json",
+        "/gateway-dashboard/observer.db",
+        "/gateway-service/manifest.lock.json",
+    )
+    return normalized in auxiliary_exact or normalized.endswith(auxiliary_suffixes)
+
+
 def _runtime_nonblocking_missing_summary(item: RuntimeEvidence, present: list[RuntimeEvidence]) -> str:
+    if _is_auxiliary_runtime_reference(item.path):
+        return f"缺失辅助运行引用 `{item.path}`，但核心实验产物已读取；该路径不阻塞 closeout。"
     item_name = Path(item.path).name
     replacement = next(
         (
@@ -1976,8 +2336,11 @@ def _compare_required_command_parameters(
     context_files: list[ContextFile],
     test_commands: list[str],
     runtime_evidence: list[RuntimeEvidence] | None = None,
+    experiment_methods: list[ExperimentRunMethod] | None = None,
 ) -> dict[str, Any]:
     required = _extract_required_command_parameters(context_files)
+    required.extend(_extract_required_parameters_from_experiment_methods(experiment_methods or []))
+    required = _dedupe_parameter_requirements(required)
     observed, observed_sources = _extract_observed_command_parameters_with_sources(
         test_commands, runtime_evidence or []
     )
@@ -2005,6 +2368,43 @@ def _compare_required_command_parameters(
         "missing": missing,
         "unexpected": unexpected,
     }
+
+
+def _extract_required_parameters_from_experiment_methods(
+    methods: list[ExperimentRunMethod],
+) -> list[dict[str, str]]:
+    requirements: list[dict[str, str]] = []
+    for method in methods:
+        source = f"experiment-handbook:{method.reference_path}#{method.title}"
+        # Treat the handbook command record as descriptive launch context only.
+        # Review-time parameter requirements must come from the explicit review-evidence
+        # section so closeout reports do not get forced to restate every launcher flag.
+        text = _required_review_evidence_text(method.review_evidence)
+        for name, value in _extract_parameters_from_command(text).items():
+            if value and not _looks_like_placeholder_parameter(name, value[-1]):
+                requirements.append({"name": name, "value": value[-1], "source": source})
+        for name, value in _extract_key_value_requirements(text).items():
+            if value and not _looks_like_placeholder_parameter(name, value):
+                requirements.append({"name": _fact_key_to_parameter_name(name), "value": value, "source": source})
+    return requirements
+
+
+def _required_review_evidence_text(text: str) -> str:
+    lines: list[str] = []
+    for line in text.splitlines():
+        lowered = line.lower()
+        if "failure classification" in lowered or "failure mode" in lowered or "失败分类" in lowered:
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _dedupe_parameter_requirements(requirements: list[dict[str, str]]) -> list[dict[str, str]]:
+    deduped: dict[tuple[str, str, str], dict[str, str]] = {}
+    for requirement in requirements:
+        key = (requirement["name"], requirement["value"], requirement["source"])
+        deduped[key] = requirement
+    return list(deduped.values())
 
 
 def _extract_observed_command_parameters_with_sources(
@@ -2533,6 +2933,10 @@ def _extract_parameter_requirement_commands(text: str) -> list[str]:
 def _looks_like_placeholder_parameter(name: str, value: str) -> bool:
     normalized_name = name.lower().strip()
     normalized_value = value.strip().strip("`").strip("'\"").lower()
+    if normalized_value.startswith("<") and normalized_value.endswith(">"):
+        return True
+    if normalized_value.startswith("$") or "${" in normalized_value:
+        return True
     if normalized_name in PARAMETER_PLACEHOLDER_NAMES:
         return True
     if normalized_value in PARAMETER_PLACEHOLDER_VALUES:
@@ -2577,7 +2981,7 @@ def _extract_parameters_from_command(command: str) -> dict[str, list[str]]:
             continue
         if "=" in part:
             name, value = part.split("=", 1)
-            params.setdefault(name, []).append(value)
+            params.setdefault(name, []).append(_redact_parameter_value(name, value))
             index += 1
             continue
         name = part
@@ -2585,9 +2989,48 @@ def _extract_parameters_from_command(command: str) -> dict[str, list[str]]:
         if index + 1 < len(parts) and not parts[index + 1].startswith("-"):
             value = parts[index + 1]
             index += 1
-        params.setdefault(name, []).append(value)
+        params.setdefault(name, []).append(_redact_parameter_value(name, value))
         index += 1
     return params
+
+
+def _extract_key_value_requirements(text: str) -> dict[str, str]:
+    requirements: dict[str, str] = {}
+    patterns = (
+        re.compile(r"(?im)^\s*([A-Za-z0-9_.-]+)\s*[:=]\s*([^\n,;`]+?)\s*$"),
+        re.compile(r"(?im)`([A-Za-z0-9_.-]+)\s*[:=]\s*([^`]+)`"),
+    )
+    for pattern in patterns:
+        for name, value in pattern.findall(text):
+            normalized_name = name.strip()
+            normalized_value = value.strip().strip("`").strip("'\"").strip("`")
+            if not normalized_name or not normalized_value:
+                continue
+            requirements[normalized_name] = normalized_value
+    return requirements
+
+
+def _fact_key_to_parameter_name(key: str) -> str:
+    stripped = key.strip()
+    if stripped.startswith("--"):
+        return stripped
+    normalized = _normalize_fact_key(key)
+    return f"--{normalized.replace('_', '-')}"
+
+
+def _redact_parameter_value(name: str, value: str) -> str:
+    value = value.strip().strip("`").strip("'\"").strip("`").rstrip(".,;，。；")
+    if _is_secret_key(name):
+        return "[REDACTED]"
+    return _normalize_parameter_comparison_value(_redact_secret_text(value))
+
+
+def _normalize_parameter_comparison_value(value: str) -> str:
+    stripped = value.strip()
+    lowered = stripped.lower()
+    if lowered in {"true", "false"}:
+        return lowered
+    return stripped
 
 
 def _overlap_matches(left: str, right: str) -> list[str]:
@@ -2760,7 +3203,9 @@ def _looks_like_reliable_check_implementation_task(text: str) -> bool:
     )
     action_markers = (
         "extend",
+        "generalize",
         "implement",
+        "refine",
         "update",
         "fix",
         "skill",
@@ -2779,6 +3224,9 @@ def _looks_like_reliable_check_implementation_task(text: str) -> bool:
         "qz",
         "tau",
         "swe",
+        "experiment",
+        "experiment-handbook",
+        "handbook",
         "训练",
         "部署",
         "benchmark",
@@ -2922,6 +3370,7 @@ def _build_report(state: ReviewBuildState) -> dict[str, Any]:
         "generated_at": utc_now(),
         "status": status,
         "status_context": state.input_data.status_context,
+        "codex_context": _review_codex_context(state),
         "fields": {
             "Field": _impacted_fields(state),
             "Why it matters": _why_it_matters(state),
@@ -2948,6 +3397,163 @@ def _build_report(state: ReviewBuildState) -> dict[str, Any]:
     if missing_fields:
         raise RuntimeError(f"missing report fields: {missing_fields}")
     return report
+
+
+def _review_codex_context(state: ReviewBuildState) -> dict[str, Any]:
+    context = detect_current_codex_context()
+    context["session_id"] = state.input_data.session_id
+    context["session_source"] = "review_input"
+    return context
+
+
+def detect_current_codex_context() -> dict[str, Any]:
+    pane_tty, process_source = _detect_current_codex_tty()
+    tmux_pane = _detect_tmux_pane_for_tty(pane_tty) if pane_tty else {}
+    env_window = _detect_env_window_label()
+    tmux_window = str(tmux_pane.get("window_label") or "") or None
+    window_label = tmux_window or env_window[0]
+    window_source = str(tmux_pane.get("source") or "") if tmux_window else env_window[1]
+    return {
+        "session_id": _detect_current_codex_session_id(),
+        "session_source": "CODEX_THREAD_ID" if os.environ.get("CODEX_THREAD_ID") else "unavailable",
+        "window_label": window_label,
+        "window_label_kind": "tmux_pane_address" if window_label else None,
+        "window_source": window_source,
+        "pane_tty": pane_tty,
+        "pane_id": tmux_pane.get("pane_id"),
+        "window_name": tmux_pane.get("window_name"),
+        "process_source": process_source,
+    }
+
+
+def _detect_current_codex_session_id() -> str | None:
+    env_session = str(os.environ.get("CODEX_THREAD_ID") or "").strip()
+    if env_session:
+        return env_session
+    return None
+
+
+def _detect_env_window_label() -> tuple[str | None, str]:
+    for key in ("CODEX_WINDOW", "CODEX_WINDOW_ID", "CODEX_WINDOW_LABEL"):
+        label = _normalize_codex_window_label(os.environ.get(key))
+        if label is not None:
+            return label, key
+    return None, "unavailable"
+
+
+def _detect_current_codex_tty() -> tuple[str | None, str]:
+    pid = os.getpid()
+    seen: set[int] = set()
+    for _ in range(12):
+        if pid <= 1 or pid in seen:
+            break
+        seen.add(pid)
+        process = _read_process(pid)
+        if not process:
+            break
+        if _is_codex_process(process):
+            tty = _normalize_tty(process.get("tty"))
+            if tty:
+                return tty, "parent_process"
+        try:
+            pid = int(str(process.get("ppid") or "0"))
+        except ValueError:
+            break
+    return None, "unavailable"
+
+
+def _read_process(pid: int) -> dict[str, str] | None:
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "pid=", "-o", "ppid=", "-o", "tty=", "-o", "comm=", "-o", "args=", "-p", str(pid)],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    line = result.stdout.strip().splitlines()[0]
+    parts = line.split(maxsplit=4)
+    if len(parts) < 5:
+        return None
+    return {"pid": parts[0], "ppid": parts[1], "tty": parts[2], "comm": parts[3], "args": parts[4]}
+
+
+def _is_codex_process(process: dict[str, str]) -> bool:
+    comm = process.get("comm", "")
+    args = process.get("args", "")
+    return (
+        comm == "codex"
+        or "/bin/codex" in args
+        or "@openai/codex" in args
+        or "node_modules/@openai/codex" in args
+    )
+
+
+def _normalize_tty(value: str | None) -> str | None:
+    if not value or value == "?":
+        return None
+    tty = value.strip()
+    if not tty:
+        return None
+    return tty if tty.startswith("/dev/") else f"/dev/{tty}"
+
+
+def _detect_tmux_pane_for_tty(tty: str) -> dict[str, str]:
+    if not os.environ.get("TMUX"):
+        return {}
+    try:
+        result = subprocess.run(
+            [
+                "tmux",
+                "list-panes",
+                "-a",
+                "-F",
+                "#{session_name}:#{window_index}.#{pane_index}|#{pane_tty}|#{window_name}|#{pane_id}",
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    for line in result.stdout.splitlines():
+        parts = line.split("|", maxsplit=3)
+        if len(parts) != 4:
+            continue
+        window_label, pane_tty, window_name, pane_id = parts
+        if _normalize_tty(pane_tty) != tty:
+            continue
+        label = _normalize_codex_window_label(window_label)
+        if label is None:
+            continue
+        return {
+            "window_label": label,
+            "pane_tty": _normalize_tty(pane_tty) or pane_tty,
+            "window_name": window_name,
+            "pane_id": pane_id,
+            "source": "parent_process_tty_tmux_list_panes",
+        }
+    return {}
+
+
+def _normalize_codex_window_label(value: str | None) -> str | None:
+    if value is None:
+        return None
+    label = str(value).strip()
+    if not label:
+        return None
+    if not CODEX_WINDOW_LABEL_RE.fullmatch(label):
+        return None
+    return label
 
 
 def _impacted_fields(state: ReviewBuildState) -> str:

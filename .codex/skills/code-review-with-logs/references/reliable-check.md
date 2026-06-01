@@ -13,11 +13,9 @@ Use reliable check to decide whether the executed command and code/template chan
 - caller-provided changed paths
 - caller-provided logs
 - git diff metadata
-- workspace-local runtime artifacts referenced by the records/logs for qz or tau experiments:
-  - qizhi/qz `events.jsonl`, `artifacts.json`, `state.json`, `train_submit_payload.json`,
-    `deploy_submit_payload.json`;
-  - deployment `launch_manifest.json` and `runtime_resolved_manifest.json`;
-  - tau bench / tau2 `tau2-command.json`, `summary.json`, `report.json`, and `results.txt`.
+- matched `experiment-handbook` run methods from `.codex/skills/experiment-handbook/references/`
+- workspace-local runtime artifacts explicitly referenced by the records/logs/test commands or
+  by the matched handbook method.
 
 ## Status
 - `PASS`: required records exist and command/change evidence maps to the plan.
@@ -33,33 +31,33 @@ progress reports, render the Chinese `reviewer_markdown` summary instead of dump
 object as a code block. Use Chinese for check display names, status descriptions, details,
 context-file display labels, and context-file status descriptions.
 
-Reliable check must compare actual commands against the original task/experiment requirements.
-If the task plan or idea records explicitly require command parameters such as `--model qwen`,
-`--dataset agentbench`, or `--seed 7`, extract those requirements and compare them with the
-executed review/test commands. Missing or mismatched required parameter values are `FAIL`, not a
-mere warning, even if broad command/objective tokens overlap.
+Reliable check must compare actual commands against the original task/experiment requirements and
+the matched `experiment-handbook` method. If the task plan, idea records, objective, or handbook
+method explicitly require command parameters or runtime facts such as `--model qwen`,
+`--dataset agentbench`, `--seed 7`, `task_count=12`, or `run_tag=...`, extract those
+requirements and compare them with executed review/test commands plus runtime artifact facts.
+Missing or mismatched required parameter values are `FAIL`, not a mere warning, even if broad
+command/objective tokens overlap.
 
-For qz training/deployment and tau bench experiments, the "actual commands" include runtime
-artifacts, not only review/test commands. The reviewer-facing report must show which artifacts
-were read and what was extracted:
-- qz training evidence: source path plus key values such as `--model-name`,
-  `--dataset-path`, `--global-batch-size`, `--rollout-batch-size`, `--run-tag`, and
-  parallelism flags when present.
-- qz deployment evidence: source path plus model/service name, base URL/API base, endpoint,
-  replica/node count, or deployment manifest fields when present.
-- tau bench evidence: source path plus benchmark, model, domain, run id/tag, status, and metrics
-  such as `average_reward` or `pass_k` when present.
+The review skill must not own a hard-coded list of experiment families. Concrete experiment
+contracts belong in `experiment-handbook` run methods. The reviewer-facing report must show:
+- which handbook method matched the task;
+- which runtime artifacts were read;
+- which commands, parameters, and facts were extracted;
+- which required values were missing or mismatched.
 
 Runtime artifact discovery is reference-driven. Only read workspace-local artifacts whose paths
-are explicitly mentioned in the task records, logs, test commands, or changed paths. Do not scan
-shared historical run roots such as `.codex/skills/qizhi-rollout-train-deploy-experiment/runs/*`
-for every qz/tau task. Historical runs may belong to another Linear issue/session and may contain
-stale secret fragments; including them makes the reliable check both misleading and unsafe.
+are explicitly mentioned in task records, logs, test commands, changed paths, objective text, or
+matched handbook methods. Do not scan shared historical run roots such as
+`.codex/skills/.../runs/*` just because the task mentions a type of experiment. Historical runs
+may belong to another Linear issue/session and may contain stale secret fragments; including them
+makes the reliable check both misleading and unsafe.
 
-If the task is clearly a qz/tau experiment and no readable runtime artifact is available, mark
-the runtime-evidence subcheck `BLOCKED`. If the task is ordinary code or skill implementation
-work and qz/tau appears only as the subject of fixture tests or documentation, mark the subcheck
-`NOT_APPLICABLE`.
+If the task clearly claims an experiment/evaluation/benchmark/training/deployment run but no
+matching handbook method is available, mark the runtime-evidence subcheck `BLOCKED`. If a matching
+method exists but no readable runtime artifact is available, also mark it `BLOCKED`. If the task
+is ordinary code or skill implementation work and experiment terms appear only as fixture tests or
+documentation, mark the subcheck `NOT_APPLICABLE`.
 
 Do not leak secrets from runtime artifacts. Redact `api_key`, bearer tokens, authorization
 headers, raw tokens, and secret fields in JSON and Markdown. It is acceptable to cite a path and
