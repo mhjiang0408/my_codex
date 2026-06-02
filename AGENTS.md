@@ -21,7 +21,7 @@
 
 1. Understand：先确认用户可见目标、影响面、现有约束和最窄可用验证命令。
 2. Scope：选择满足目标的最小 coherent change，通过`software-architecture`先识别业务能力、领域边界、职责分层和系统约束，再通过`modular-code`确保每个模块单职责、单输入/输出、明确可编辑边界；不要混入无关清理、格式化、依赖升级或历史入口恢复。
-3. Plan：基于 `software-architecture` 先用软件架构师语言说明业务能力、领域边界、责任分配、实现路径和验收模型，再落到文件、模块或函数层面的执行步骤；不要只堆文件名、模块名或函数名。跨模块、公共接口、数据/安全、构建/发布、实验运行契约或大文件重构前，先写短计划并确认不放宽本文件约束。
+3. Plan：基于 `software-architecture` 先用软件架构师语言说明业务能力、领域边界、责任分配、实现路径和验收模型，再落到文件、模块或函数层面的执行步骤；不要只堆文件名、模块名或函数名。跨模块、公共接口、数据/安全、构建/发布、实验运行契约或大文件重构前，先写短计划并确认不放宽本文件约束。plan至少要有一个section用自然语言基于software architecture的形式告诉我你的实现路径
 4. Implement：沿用本仓库既有模式，保持 diff 可审阅；公共 API、manifest/schema、runner CLI、service contract 默认保持兼容。
 5. Validate：先跑 focused/static check；基础设施改动默认跑 `system-contract`，再按影响面追加更重验证。
 6. Review：收口前检查 `code-review-with-logs` 和实际 diff，确认没有无关 churn、generated/cache、本地实验产物、secret-like 字符串或私有端点。
@@ -116,7 +116,7 @@ uv run python .codex/skills/system-contract/scripts/check_system_contract.py --w
 
 ## 4. 开发闭环
 
-1. **Plan**: 更新 `.codex_record/<CODEX_THREAD_ID>/task_plan.md`，确认 Linear hook 已登记；基于 `software-architecture` 写清架构化计划、领域划分、业务实现路径、验收模型，再使用 `unit-test` 冻结任务级验收 gate。
+1. **Plan**: 更新 `.codex_record/<CODEX_THREAD_ID>/task_plan.md`，确认 Linear hook 已登记；基于 `software-architecture` 写清架构化计划、领域划分、业务实现路径、验收模型，再使用 `unit-test` 冻结任务级验收 gate。plan至少要有一个section用自然语言基于software architecture的形式告诉我你的实现路径
 2. **Act**: 通过 `change-gate` 保持最小 coherent diff；通过 `modular-code` 保持明确 edit boundary。
 3. **Record**: 将关键操作、错误、验证结果增量追加到 `progress.md`，发现和决策写入 `findings.md`。
 4. **Validate**: 运行 task-scoped `uv run ...` 验收命令；workflow/skill 改动追加 `system-contract` gate。
