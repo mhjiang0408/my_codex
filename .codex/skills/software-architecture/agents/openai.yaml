@@ -1,0 +1,6 @@
+interface:
+  display_name: "software architecture"
+  short_description: "Think about how to plan and implement features from a software architect's perspective."
+  default_prompt: "Must use $software-architecture when planning and architecture review."
+policy:
+  allow_implicit_invocation: true

@@ -3,8 +3,8 @@
 ## 0. 入口规则
 
 **Required Skills**: `planning-with-files`, `linear-cli`, `change-gate`, `uv-package-manager`,
-`modular-code`, `unit-test`, `harness-bench`, `experiment-handbook`, `refinement`,
-`system-contract`, `code-review-with-logs`
+`software-architecture`, `modular-code`, `unit-test`, `harness-bench`,
+`experiment-handbook`, `refinement`, `system-contract`, `code-review-with-logs`
 
 所有非闲聊、非纯问候、非 `[quick check]` 的任务都必须先走 `linear-cli` start-task hook，
 并使用文件化记录。`AGENTS.md` 只保留仓库级硬约束；可复用细节必须沉淀到对应 skill。
@@ -20,8 +20,8 @@
 仓库基础设施改动默认遵循小步、可验证、可复核的工作闭环：
 
 1. Understand：先确认用户可见目标、影响面、现有约束和最窄可用验证命令。
-2. Scope：选择满足目标的最小 coherent change，通过`modular-code`确保每个模块单职责、单输入/输出、明确可编辑边界；不要混入无关清理、格式化、依赖升级或历史入口恢复。
-3. Plan：跨模块、公共接口、数据/安全、构建/发布、实验运行契约或大文件重构前，先写短计划并确认不放宽本文件约束。
+2. Scope：选择满足目标的最小 coherent change，通过`software-architecture`先识别业务能力、领域边界、职责分层和系统约束，再通过`modular-code`确保每个模块单职责、单输入/输出、明确可编辑边界；不要混入无关清理、格式化、依赖升级或历史入口恢复。
+3. Plan：基于 `software-architecture` 先用软件架构师语言说明业务能力、领域边界、责任分配、实现路径和验收模型，再落到文件、模块或函数层面的执行步骤；不要只堆文件名、模块名或函数名。跨模块、公共接口、数据/安全、构建/发布、实验运行契约或大文件重构前，先写短计划并确认不放宽本文件约束。
 4. Implement：沿用本仓库既有模式，保持 diff 可审阅；公共 API、manifest/schema、runner CLI、service contract 默认保持兼容。
 5. Validate：先跑 focused/static check；基础设施改动默认跑 `system-contract`，再按影响面追加更重验证。
 6. Review：收口前检查 `code-review-with-logs` 和实际 diff，确认没有无关 churn、generated/cache、本地实验产物、secret-like 字符串或私有端点。
@@ -36,6 +36,7 @@
 | 任务登记、Linear 复用/reopen/sub-issue/closeout | `linear-cli` | 唯一拥有 Linear 细节规则；AGENTS 不重复展开。 |
 | 代码、测试、配置、依赖、构建、文档行为或 agent-rule 改动 | `change-gate` | 工程闭环、scope control、repo hygiene、自检和报告纪律。 |
 | 本地 Python 执行、依赖、工具命令 | `uv-package-manager` | 所有本地 Python 相关执行必须使用 `uv` / `uvx` / `uv tool run`。 |
+| 软件开发架构计划、领域划分、业务实现路径、验收模型 | `software-architecture` | Plan 阶段必须先用架构语言说明业务能力、领域边界、责任分配、实现路径和验收模型，再细化到文件/模块层面。 |
 | Python 模块边界、职责拆分、edit boundary | `modular-code` | 单职责、单输入/输出、明确可编辑边界。 |
 | 任务级验收、fail-before/pass-after、lint/type gate | `unit-test` | 普通验收测试不得放入 `tests/bench`。 |
 | 定量评估、benchmark 方法学、`tests/bench/**` | `harness-bench` | 只有明确 benchmark / 效果评估任务才使用。 |
@@ -74,7 +75,8 @@
 
 ### `.codex_idea`
 
-科研相关任务必须创建并只写入：
+科研、实验、benchmark、论文复现、模型与框架评测、controller 对比、pipeline smoke/full run
+等任务必须创建并只写入：
 
 | File | Purpose |
 |---|---|
@@ -82,10 +84,23 @@
 | `.codex_idea/<CODEX_THREAD_ID>/idea_progress.md` | 执行日志和四个保真检查点状态 |
 | `.codex_idea/<CODEX_THREAD_ID>/idea_findings.md` | 实验结果和结论 |
 
-科研任务必须执行四个 reliable checks：
+所有实验（包括评测、复现、pipeline smoke试跑任务等）的 `idea_plan.md` 必须在执行前写明可由 `code-review-with-logs`
+抽取的 `命令参数要求` / `实验命令` / `required parameters`，至少包含：
+模型名、controller mode、task_count、`runtime.stop_targets`、外层 timeout、
+artifact root、validator/score 口径。若用户要求“论文复现”或“复现口径”，必须明确写出
+paper/legacy 期望参数，并禁止用 smoke/diagnostic 参数替代。
+
+实验任务 closeout 时，`.codex_idea` 缺失、参数要求缺失、或实际命令/artifact facts
+与 `idea_plan.md` 记录不一致，必须使 reliable check `FAIL` 或 `BLOCKED`；不得把
+`.codex_idea` 缺失视为 `NOT_APPLICABLE`。诊断实验、smoke 和正式实验的结论必须分开写，
+不得把诊断口径结果报告成正式实验结果；不得把诊断口径结果报告成论文复现结果。
+这些实验都必须符合人工智能学术论文实验规范。
+
+科研和实验任务必须执行四个 reliable checks：
 - Idea Check: 复述用户 idea 和核心假设，不得替换假设。
 - Code Mapping Check: 每段代码改动必须对应 idea 要求，并标注 assumption。
-- Experiment Check: 每个实验只验证一个用户提出的 hypothesis / claim。
+- Experiment Check: 每个实验只验证一个用户提出的 hypothesis / claim，并核对
+  `idea_plan.md` 的参数要求与实际命令/artifact facts 一致。
 - Conclusion Check: 结论只能按 confirmed / not confirmed / inconclusive / needs further experiment 对应实验输出。
 
 ## 3. 本地执行与验证硬约束
@@ -101,7 +116,7 @@ uv run python .codex/skills/system-contract/scripts/check_system_contract.py --w
 
 ## 4. 开发闭环
 
-1. **Plan**: 更新 `.codex_record/<CODEX_THREAD_ID>/task_plan.md`，确认 Linear hook 已登记，使用 `unit-test` 冻结任务级验收 gate。
+1. **Plan**: 更新 `.codex_record/<CODEX_THREAD_ID>/task_plan.md`，确认 Linear hook 已登记；基于 `software-architecture` 写清架构化计划、领域划分、业务实现路径、验收模型，再使用 `unit-test` 冻结任务级验收 gate。
 2. **Act**: 通过 `change-gate` 保持最小 coherent diff；通过 `modular-code` 保持明确 edit boundary。
 3. **Record**: 将关键操作、错误、验证结果增量追加到 `progress.md`，发现和决策写入 `findings.md`。
 4. **Validate**: 运行 task-scoped `uv run ...` 验收命令；workflow/skill 改动追加 `system-contract` gate。
