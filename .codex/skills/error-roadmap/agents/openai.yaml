@@ -1,0 +1,4 @@
+interface:
+  display_name: "Error Roadmap"
+  short_description: "Localize runtime failures without fallback hacks"
+  default_prompt: "Use $error-roadmap to design structured try-except boundaries and complete-log diagnosis before implementing a fix."
